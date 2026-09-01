@@ -1,0 +1,53 @@
+{
+  "id": "sayri-gateway-discord",
+  "name": "Discord Bot Gateway",
+  "version": "1.1.0",
+  "author": "jaimegh-es",
+  "description": "Autonomous Discord Bot Gateway connecting server channels and DMs to Sayri AI Agents with persistent conversation memory (/new), guest access kill switch (/guests), channel summaries (/resume), and OTP desktop pairing.",
+  "entrypoint": "gateway.py",
+  "sandbox_level": "LEVEL_1_READONLY",
+  "required_secrets": [
+    "DISCORD_BOT_TOKEN"
+  ],
+  "authorization": {
+    "mode": "pairing_otp",
+    "allowed_users": [],
+    "pairing_pin_required": true,
+    "pin_expiration_seconds": 300,
+    "allow_channel_guests": false,
+    "rate_limit": {
+      "max_requests_per_minute": 30,
+      "burst": 10
+    }
+  },
+  "ui": {
+    "sync_instructions": "1. Ve a Discord Developer Portal (https://discord.com/developers/applications) y crea una aplicación.\n2. En la pestaña 'Bot', copia el Bot Token.\n3. En 'Privileged Gateway Intents', activa 'MESSAGE CONTENT INTENT'.\n4. En 'OAuth2' -> 'URL Generator', marca 'bot' con permisos de 'Send Messages', 'Read Message History' y 'View Channels' e invita el bot a tu servidor.\n5. En Discord, escribe /pair <PIN> con el PIN mostrado en tu escritorio.",
+    "chat_url": "https://discord.com/channels/@me",
+    "actions": [
+      {
+        "id": "set_token",
+        "label": "Configure Bot Token",
+        "type": "secret_prompt",
+        "secret_key": "DISCORD_BOT_TOKEN"
+      },
+      {
+        "id": "view_pin",
+        "label": "Show Pairing PIN",
+        "type": "display_pin"
+      },
+      {
+        "id": "toggle_guests",
+        "label": "Toggle Guest Access",
+        "type": "kill_switch"
+      }
+    ]
+  },
+  "capabilities": [
+    "receive_messages",
+    "send_messages",
+    "continuous_conversation",
+    "channel_summarization",
+    "channel_guest_access_control",
+    "desktop_pairing_otp"
+  ]
+}
