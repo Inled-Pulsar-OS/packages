@@ -1,4 +1,4 @@
-# 📦 Pulsar OS Packages
+# Pulsar OS Packages
 
 Declarative packages, gateways, and plugins for **Pulsar OS**.
 
@@ -6,7 +6,7 @@ This repository contains the source code for Sayri AI gateways, skills, plugins,
 
 ---
 
-## 🗂️ Repository Structure
+## Repository Structure
 
 ```
 packages/
@@ -19,7 +19,7 @@ packages/
 
 ---
 
-## 🔌 Available Gateways
+## Available Gateways
 
 | Package | Description | Version |
 |:---|:---|:---:|
@@ -28,7 +28,7 @@ packages/
 
 ---
 
-## 🚀 Installation
+## Installation
 
 Install packages from the Pulsar Store CLI:
 
@@ -41,7 +41,7 @@ Or via the [Pulsar Store web UI](https://store-os.inled.es).
 
 ---
 
-## 🛠️ Development
+## Development
 
 ### Gateway Structure
 
@@ -70,7 +70,7 @@ python gateway.py
 
 ---
 
-## 📤 Submitting to Pulsar Store
+## Submitting to Pulsar Store
 
 1. Package your gateway as a `.zip` file
 2. Upload to a public URL (GitHub Releases recommended)
@@ -79,7 +79,7 @@ python gateway.py
 
 ---
 
-## 🔒 Security
+## Security
 
 All gateways undergo **double-layer security auditing**:
 
@@ -90,6 +90,6 @@ Gateways run in sandboxed environments with strict authorization (OTP pairing, r
 
 ---
 
-## 📄 License
+## License
 
 Part of the [Pulsar OS](https://os.inled.es) project by [Inled](https://inled.es).

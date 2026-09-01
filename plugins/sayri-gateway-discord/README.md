@@ -1,16 +1,16 @@
-# 🤖 Sayri Gateway Plugin: Discord Bot
+# Sayri Gateway Plugin: Discord Bot
 
 This plugin connects any **Discord** server or direct message (DM) channel to your AI agents in **Sayri (Pulsar OS)**.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Flexible Invocation**:
   - In server channels: `/sayri <message>`, `!sayri <message>`, or mention the bot `@SayriBot <message>`.
   - In DMs: Just type your question and the bot will respond.
 - **Smart Channel Reading & Summarization**:
-  - Ask Sayri to *"resume the last messages"*, *"what was said above"*, or *"summarize this channel"* — the gateway fetches recent messages via Discord's REST API and provides full context to the agent.
+  - Ask Sayri to *"resume the last messages"*, *"what was said above"*, or *"summarize this channel"* -- the gateway fetches recent messages via Discord's REST API and provides full context to the agent.
 - **Secure Desktop Pairing (OTP)**:
   - Protection against unauthorized access with a 6-digit PIN generated on your Pulsar OS desktop.
   - Brute-force protection with attempt limits and automatic PIN rotation.
@@ -21,7 +21,7 @@ This plugin connects any **Discord** server or direct message (DM) channel to yo
 
 ---
 
-## 📖 Step-by-Step Setup Guide
+## Step-by-Step Setup Guide
 
 ### Step 1: Create the Discord Application & Bot
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
@@ -32,28 +32,28 @@ This plugin connects any **Discord** server or direct message (DM) channel to yo
 ### Step 2: Enable Privileged Gateway Intents (Required!)
 1. In the same **`Bot`** tab, scroll down to **`Privileged Gateway Intents`**.
 2. **Enable the following**:
-   - ✅ **`MESSAGE CONTENT INTENT`** *(Required for the bot to read `/sayri <message>` text in channels)*.
-   - ✅ **`SERVER MEMBERS INTENT`** *(Recommended for identifying server users)*.
+   - **`MESSAGE CONTENT INTENT`** *(Required for the bot to read `/sayri <message>` text in channels)*.
+   - **`SERVER MEMBERS INTENT`** *(Recommended for identifying server users)*.
 3. Click **`Save Changes`** at the bottom.
 
 ### Step 3: Generate the Bot Invitation URL
-1. In the left sidebar, go to **`OAuth2`** → **`URL Generator`**.
+1. In the left sidebar, go to **`OAuth2`** -> **`URL Generator`**.
 2. Under **`SCOPES`**, check only:
-   - ✅ **`bot`**
+   - **`bot`**
 3. Under **`BOT PERMISSIONS`**, check:
-   - ✅ **`Send Messages`**
-   - ✅ **`Send Messages in Threads`**
-   - ✅ **`Read Message History`** *(Required for channel summarization)*
-   - ✅ **`View Channels`**
-   - ✅ **`Use External Emojis`** *(Optional)*
+   - **`Send Messages`**
+   - **`Send Messages in Threads`**
+   - **`Read Message History`** *(Required for channel summarization)*
+   - **`View Channels`**
+   - **`Use External Emojis`** *(Optional)*
 4. Copy the **`GENERATED URL`** at the bottom.
 5. Paste it in your browser and select the Discord server to invite the bot.
 
 ---
 
-## ⚙️ Configuration in Sayri (Pulsar OS)
+## Configuration in Sayri (Pulsar OS)
 
-1. Open Sayri and click the **Settings** ⚙️ button.
+1. Open Sayri and click the **Settings** button.
 2. Go to the **Gateways** tab and click **`+ Add Gateway`**.
 3. Fill in the form:
    - **Platform**: Select `Discord Bot Gateway (sayri-gateway-discord)`.
@@ -65,11 +65,11 @@ This plugin connects any **Discord** server or direct message (DM) channel to yo
 
 ---
 
-## 🔑 Pair Your Discord Account
+## Pair Your Discord Account
 
 For security, Sayri rejects messages from unknown users until they pair with the desktop:
 
-1. In Sayri, on your Discord Gateway card, click **`🔑 Show Pairing PIN`** (shows a 6-digit code).
+1. In Sayri, on your Discord Gateway card, click **`Show Pairing PIN`** (shows a 6-digit code).
 2. In your Discord server or DM with the bot, type:
    ```text
    /sayri /pair 123456
@@ -79,7 +79,7 @@ For security, Sayri rejects messages from unknown users until they pair with the
 
 ---
 
-## 💬 Available Discord Commands
+## Available Discord Commands
 
 | Command | Description |
 | :--- | :--- |
