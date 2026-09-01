@@ -1,90 +1,90 @@
 # 🤖 Sayri Gateway Plugin: Discord Bot
 
-Este plugin permite conectar cualquier servidor de **Discord** o canales de mensajes directos (DMs) directamente con tus agentes de Inteligencia Artificial en **Sayri (Pulsar OS)**.
+This plugin connects any **Discord** server or direct message (DM) channel to your AI agents in **Sayri (Pulsar OS)**.
 
 ---
 
-## 🌟 Características Principales
+## ✨ Key Features
 
-- **Invocación Flexible**:
-  - En canales de servidores: `/sayri <mensaje>`, `!sayri <mensaje>` o mencionando al bot `@SayriBot <mensaje>`.
-  - En Mensajes Directos (DMs): Escribe directamente cualquier duda y el bot te responderá.
-- **Lectura y Resumen Inteligente del Canal**:
-  - Si le dices a Sayri *"resume los últimos mensajes"*, *"qué han dicho arriba"* o *"haz un resumen del canal"*, el gateway consulta los últimos mensajes del canal mediante la API REST de Discord y le entrega el contexto completo al agente para su análisis.
-- **Emparejamiento Seguro de Escritorio (OTP Pairing)**:
-  - Sistema de protección contra accesos no autorizados con PIN de 6 dígitos generado en tu escritorio de Pulsar OS.
-  - Protección contra fuerza bruta con límite de intentos y rotación automática del PIN.
-- **Multi-Instancia y Sandboxing**:
-  - Puedes crear múltiples instancias del bot de Discord conectadas a diferentes agentes (ej. *Sayri Principal*, *Asistente Programador*, etc.) con diferentes niveles de aislamiento (`LEVEL_0_NO_EXEC` hasta `LEVEL_3_HOST_USER`).
-- **Cero Dependencias Externas**:
-  - Implementado en Python puro con WebSockets RFC 6455 sobre TLS nativo y API REST v10.
+- **Flexible Invocation**:
+  - In server channels: `/sayri <message>`, `!sayri <message>`, or mention the bot `@SayriBot <message>`.
+  - In DMs: Just type your question and the bot will respond.
+- **Smart Channel Reading & Summarization**:
+  - Ask Sayri to *"resume the last messages"*, *"what was said above"*, or *"summarize this channel"* — the gateway fetches recent messages via Discord's REST API and provides full context to the agent.
+- **Secure Desktop Pairing (OTP)**:
+  - Protection against unauthorized access with a 6-digit PIN generated on your Pulsar OS desktop.
+  - Brute-force protection with attempt limits and automatic PIN rotation.
+- **Multi-Instance & Sandboxing**:
+  - Create multiple bot instances connected to different agents (e.g. *Main Sayri*, *Developer Assistant*) with different isolation levels (`LEVEL_0_NO_EXEC` to `LEVEL_3_HOST_USER`).
+- **Zero External Dependencies**:
+  - Pure Python implementation with RFC 6455 WebSockets over native TLS and REST API v10.
 
 ---
 
-## 📖 Guía Paso a Paso de Configuración
+## 📖 Step-by-Step Setup Guide
 
-### Paso 1: Crear la Aplicación y Bot en Discord
-1. Entra en el [Discord Developer Portal](https://discord.com/developers/applications).
-2. Haz clic en el botón superior derecho **`New Application`** y ponle un nombre (ej. `Sayri Assistant`).
-3. En el menú lateral izquierdo, entra en la pestaña **`Bot`**.
-4. Haz clic en **`Reset Token`** (o *Copy*), copia el **Bot Token** y guárdalo (lo necesitarás en Sayri).
+### Step 1: Create the Discord Application & Bot
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Click **`New Application`** in the top right and give it a name (e.g. `Sayri Assistant`).
+3. In the left sidebar, go to the **`Bot`** tab.
+4. Click **`Reset Token`** (or *Copy*), copy the **Bot Token** and save it (you'll need it in Sayri).
 
-### Paso 2: Activar los Privileged Gateway Intents (¡Imprescindible!)
-1. En la misma pestaña **`Bot`**, baja hasta la sección **`Privileged Gateway Intents`**.
-2. **Activa obligatoriamente**:
-   - ✅ **`MESSAGE CONTENT INTENT`** *(Requerido para que el bot pueda leer el texto de `/sayri <mensaje>` en los canales)*.
-   - ✅ **`SERVER MEMBERS INTENT`** *(Recomendado para identificar a los usuarios del servidor)*.
-3. Haz clic en **`Save Changes`** abajo.
+### Step 2: Enable Privileged Gateway Intents (Required!)
+1. In the same **`Bot`** tab, scroll down to **`Privileged Gateway Intents`**.
+2. **Enable the following**:
+   - ✅ **`MESSAGE CONTENT INTENT`** *(Required for the bot to read `/sayri <message>` text in channels)*.
+   - ✅ **`SERVER MEMBERS INTENT`** *(Recommended for identifying server users)*.
+3. Click **`Save Changes`** at the bottom.
 
-### Paso 3: Generar la Invitación del Bot con los Permisos
-1. En el menú lateral izquierdo, ve a **`OAuth2`** ➔ **`URL Generator`**.
-2. En la casilla **`SCOPES`**, marca únicamente:
+### Step 3: Generate the Bot Invitation URL
+1. In the left sidebar, go to **`OAuth2`** → **`URL Generator`**.
+2. Under **`SCOPES`**, check only:
    - ✅ **`bot`**
-3. Abajo aparecerá la sección **`BOT PERMISSIONS`**. Marca los siguientes permisos:
-   - ✅ **`Send Messages`** *(Enviar mensajes)*
-   - ✅ **`Send Messages in Threads`** *(Enviar mensajes en hilos)*
-   - ✅ **`Read Message History`** *(Leer historial de mensajes, necesario para la función de resumen)*
-   - ✅ **`View Channels`** *(Ver canales)*
-   - ✅ **`Use External Emojis`** *(Opcional)*
-4. Copia la **`GENERATED URL`** que aparece al final de la página.
-5. Pégala en tu navegador y selecciona el servidor de Discord al que deseas invitar a tu bot.
+3. Under **`BOT PERMISSIONS`**, check:
+   - ✅ **`Send Messages`**
+   - ✅ **`Send Messages in Threads`**
+   - ✅ **`Read Message History`** *(Required for channel summarization)*
+   - ✅ **`View Channels`**
+   - ✅ **`Use External Emojis`** *(Optional)*
+4. Copy the **`GENERATED URL`** at the bottom.
+5. Paste it in your browser and select the Discord server to invite the bot.
 
 ---
 
-## ⚙️ Configuración en Sayri (Pulsar OS)
+## ⚙️ Configuration in Sayri (Pulsar OS)
 
-1. Abre Sayri y pulsa en el botón de **Ajustes** ⚙️.
-2. Ve a la pestaña **Gateways** y haz clic en **`+ Add Gateway`**.
-3. En el formulario:
-   - **Plataforma**: Selecciona `Discord Bot Gateway (sayri-gateway-discord)`.
-   - **Nombre de la instancia**: Ej. `Discord - Servidor Principal`.
-   - **Agente Vinculado**: Selecciona el agente (ej. `Sayri Principal`).
-   - **Nivel de Sandbox**: Selecciona el nivel de seguridad (ej. `LEVEL_1_READONLY`).
-   - **Bot Token**: Pega el token que copiaste en el Paso 1.
-4. Haz clic en **`Create Gateway Instance`**. El bot se conectará inmediatamente.
+1. Open Sayri and click the **Settings** ⚙️ button.
+2. Go to the **Gateways** tab and click **`+ Add Gateway`**.
+3. Fill in the form:
+   - **Platform**: Select `Discord Bot Gateway (sayri-gateway-discord)`.
+   - **Instance Name**: e.g. `Discord - Main Server`.
+   - **Linked Agent**: Select the agent (e.g. `Sayri Main`).
+   - **Sandbox Level**: Select the security level (e.g. `LEVEL_1_READONLY`).
+   - **Bot Token**: Paste the token you copied in Step 1.
+4. Click **`Create Gateway Instance`**. The bot will connect immediately.
 
 ---
 
-## 🔑 Emparejar tu Cuenta de Discord
+## 🔑 Pair Your Discord Account
 
-Por seguridad, Sayri rechaza mensajes de usuarios desconocidos hasta que se emparejan con el escritorio:
+For security, Sayri rejects messages from unknown users until they pair with the desktop:
 
-1. En Sayri, en la tarjeta de tu Gateway de Discord, pulsa en el botón **`🔑 Show Pairing PIN`** (mostrará un código de 6 dígitos).
-2. En tu servidor de Discord o por mensaje directo con el bot, escribe:
+1. In Sayri, on your Discord Gateway card, click **`🔑 Show Pairing PIN`** (shows a 6-digit code).
+2. In your Discord server or DM with the bot, type:
    ```text
    /sayri /pair 123456
    ```
-   *(Sustituyendo `123456` por el PIN mostrado en tu pantalla).*
-3. El bot te responderá confirmando que tu usuario ha sido autorizado. ¡Ya puedes hablar con Sayri libremente!
+   *(Replace `123456` with the PIN shown on your screen.)*
+3. The bot will confirm your account is authorized. You can now chat with Sayri freely!
 
 ---
 
-## 💬 Comandos Disponibles en Discord
+## 💬 Available Discord Commands
 
-| Comando | Descripción |
+| Command | Description |
 | :--- | :--- |
-| `/sayri <pregunta>` | Envía una consulta o petición a Sayri. |
-| `!sayri <pregunta>` | Prefijo alternativo para consultar a Sayri. |
-| `@SayriBot <pregunta>` | Mención directa al bot en cualquier canal. |
-| `/sayri resume los últimos mensajes` | Lee los mensajes recientes del canal y genera un resumen estructurado. |
-| `/sayri /pair <PIN>` | Empareja y autoriza tu cuenta de Discord con Sayri. |
+| `/sayri <question>` | Send a query or request to Sayri. |
+| `!sayri <question>` | Alternative prefix to query Sayri. |
+| `@SayriBot <question>` | Direct mention to the bot in any channel. |
+| `/sayri resume the last messages` | Read recent channel messages and generate a structured summary. |
+| `/sayri /pair <PIN>` | Pair and authorize your Discord account with Sayri. |
