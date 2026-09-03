@@ -202,7 +202,7 @@ class AuthorizationManager:
 
 
 class SayriTelegramGateway:
-    """Main Gateway loop."""
+    """Main Gateway loop with Continuous Sessions, Standby Inactivity Timeout, and History Recall."""
 
     def __init__(self):
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -215,6 +215,16 @@ class SayriTelegramGateway:
         self.auth = AuthorizationManager()
         self.last_update_id: Optional[int] = None
         self._running = True
+
+        # Inactivity timeout (seconds) and resume permission from Gateway Supervisor configuration
+        self.allow_resume_previous = os.environ.get("SAYRI_ALLOW_RESUME_PREVIOUS", "1") == "1"
+        try:
+            self.inactivity_timeout = float(os.environ.get("SAYRI_INACTIVITY_TIMEOUT", "1800"))
+        except ValueError:
+            self.inactivity_timeout = 1800.0  # Default 30 minutes
+
+        # Active session registry: chat_id -> {"session_id": str, "last_activity": float, "prev_session_id": Optional[str]}
+        self._sessions: Dict[int, Dict[str, Any]] = {}
 
         # Ensure a valid desktop PIN file exists
         if not SHARED_PIN_FILE.is_file():
@@ -237,7 +247,39 @@ class SayriTelegramGateway:
                 return p
         return None
 
-    def query_sayri_core(self, prompt: str, user_name: str) -> str:
+    def _get_or_create_session(self, chat_id: int, user_name: str) -> Tuple[str, bool]:
+        """Resolves active continuous session for chat, creating a new one if standby timeout elapsed."""
+        now = time.time()
+        session_info = self._sessions.get(chat_id)
+
+        if session_info:
+            last_activity = session_info.get("last_activity", 0.0)
+            if now - last_activity > self.inactivity_timeout:
+                # Standby timeout reached: archive previous session and spawn new clean one
+                prev_id = session_info.get("session_id")
+                new_session_id = f"tg-{INSTANCE_ID}-{chat_id}-{int(now)}"
+                self._sessions[chat_id] = {
+                    "session_id": new_session_id,
+                    "last_activity": now,
+                    "prev_session_id": prev_id,
+                }
+                print(f"[Gateway] ⏱️ Inactivity timeout reached for chat {chat_id}. Started new session: {new_session_id}")
+                return new_session_id, True
+            else:
+                # Continuous conversation within timeout window
+                session_info["last_activity"] = now
+                return session_info["session_id"], False
+
+        # First session for this chat
+        new_session_id = f"tg-{INSTANCE_ID}-{chat_id}-{int(now)}"
+        self._sessions[chat_id] = {
+            "session_id": new_session_id,
+            "last_activity": now,
+            "prev_session_id": None,
+        }
+        return new_session_id, True
+
+    def query_sayri_core(self, prompt: str, user_name: str, session_id: str) -> str:
         """Sends query to Sayri IPC socket or evaluates locally."""
         sock_path = self.find_sayri_socket()
         if sock_path:
@@ -252,9 +294,10 @@ class SayriTelegramGateway:
                     "target_agent": TARGET_AGENT,
                     "sandbox_level": SANDBOX_LEVEL,
                     "instance_id": INSTANCE_ID,
+                    "session_id": session_id,
                 }
                 client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-                
+
                 chunks = []
                 while True:
                     data = client.recv(4096)
@@ -268,7 +311,7 @@ class SayriTelegramGateway:
             except Exception as e:
                 print(f"[Gateway] Socket communication warning: {e}", file=sys.stderr)
 
-        return f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
+        return f"👋 Hola {user_name}! Sayri recibió tu mensaje: '{prompt}'."
 
     def handle_message(self, message: Dict[str, Any]) -> None:
         chat_id = message.get("chat", {}).get("id")
@@ -307,9 +350,8 @@ class SayriTelegramGateway:
                 )
                 return
 
-        # 2. Check authorization for all other messages (/start, /help, queries)
+        # 2. Check authorization for all other messages
         if not self.auth.is_authorized(user_id, username):
-            # NEVER reveal the PIN to the chat.
             welcome_locked = (
                 "🔒 Sayri Desktop Assistant\n\n"
                 "This assistant is private and locked to its desktop owner.\n\n"
@@ -321,21 +363,66 @@ class SayriTelegramGateway:
             self.bot.send_message(chat_id, welcome_locked)
             return
 
-        # 3. Authorized user query
+        # 3. Dedicated Commands (/new, /resume, /start, /help)
+        user_display = username or user.get("first_name", "User")
+        now = time.time()
+
+        if text.startswith(("/new", "/nuevo")):
+            prev_id = self._sessions.get(chat_id, {}).get("session_id")
+            new_id = f"tg-{INSTANCE_ID}-{chat_id}-{int(now)}"
+            self._sessions[chat_id] = {
+                "session_id": new_id,
+                "last_activity": now,
+                "prev_session_id": prev_id,
+            }
+            self.bot.send_message(chat_id, "✨ Nueva conversación iniciada. ¿De qué te gustaría hablar ahora?")
+            return
+
+        if text.startswith(("/resume", "/continuar")):
+            if not self.allow_resume_previous:
+                self.bot.send_message(
+                    chat_id,
+                    "🔒 La reanudación de conversaciones anteriores está desactivada en los ajustes de este Gateway.\nPuedes habilitarla desde la ventana de Sayri en tu escritorio."
+                )
+                return
+
+            prev_id = self._sessions.get(chat_id, {}).get("prev_session_id")
+            if prev_id:
+                self._sessions[chat_id]["session_id"] = prev_id
+                self._sessions[chat_id]["last_activity"] = now
+                self.bot.send_message(
+                    chat_id,
+                    "🔄 Conversación anterior reanudada con éxito. Continuamos donde lo dejamos."
+                )
+            else:
+                self.bot.send_message(
+                    chat_id,
+                    "ℹ️ No hay una conversación anterior reciente para reanudar en esta sesión."
+                )
+            return
+
         if text in ("/start", "/help"):
+            timeout_min = int(self.inactivity_timeout / 60)
             self.bot.send_message(
                 chat_id,
-                f"🤖 Sayri Copilot Active\nWelcome @{username or user_id}! How can I help you on your Pulsar OS system today?"
+                f"🤖 Sayri Copilot Activo\n\n"
+                f"Hola @{user_display}! La conversación es continuada mientras estemos chateando.\n\n"
+                f"Comandos útiles:\n"
+                f"• /new - Iniciar un nuevo tema de conversación.\n"
+                f"• /resume - Reanudar la conversación anterior.\n\n"
+                f"⏳ Las conversaciones finalizan tras {timeout_min} min de inactividad."
             )
             return
 
-        # Forward query to Sayri Core
+        # 4. Resolve active session and forward query to Sayri Core
+        session_id, was_new = self._get_or_create_session(chat_id, user_display)
         self.bot.send_chat_action(chat_id, "typing")
-        reply = self.query_sayri_core(text, username or user.get("first_name", "User"))
+        reply = self.query_sayri_core(text, user_display, session_id=session_id)
         self.bot.send_message(chat_id, reply, reply_to_message_id=message.get("message_id"))
 
     def run(self) -> None:
         print("[Sayri Telegram Gateway] Gateway started successfully.")
+        print(f"[Sayri Telegram Gateway] Inactivity timeout: {self.inactivity_timeout}s | Allow Resume: {self.allow_resume_previous}")
         print("[Sayri Telegram Gateway] Listening for updates on api.telegram.org...")
 
         while self._running:
@@ -356,3 +443,4 @@ class SayriTelegramGateway:
 if __name__ == "__main__":
     gateway = SayriTelegramGateway()
     gateway.run()
+

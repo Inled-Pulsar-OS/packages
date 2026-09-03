@@ -441,13 +441,29 @@ class DiscordGatewayDaemon:
         self.last_sequence: Optional[int] = None
         self.session_id: Optional[str] = None
         self.running = False
-        self.bot_user: Dict[str, Any] = {}
-        # Session versioning for continuous memory and /new
+        # Configuration from Gateway Supervisor
+        self.allow_resume_previous = os.environ.get("SAYRI_ALLOW_RESUME_PREVIOUS", "1") == "1"
+        try:
+            self.inactivity_timeout = float(os.environ.get("SAYRI_INACTIVITY_TIMEOUT", "1800"))
+        except ValueError:
+            self.inactivity_timeout = 1800.0  # Default 30 minutes
+
+        # Session versioning and activity tracking for continuous memory and /new
         self.channel_sessions: Dict[str, int] = {}
+        self.channel_last_activity: Dict[str, float] = {}
 
     def get_channel_session_id(self, channel_id: str, author_id: str, is_dm: bool) -> str:
-        """Builds a deterministic continuous session ID per channel or DM."""
+        """Builds a deterministic continuous session ID per channel or DM, advancing on standby timeout."""
         key = f"dm:{author_id}" if is_dm else f"chan:{channel_id}"
+        now = time.time()
+        last_act = self.channel_last_activity.get(key, now)
+
+        if key in self.channel_last_activity and (now - last_act > self.inactivity_timeout):
+            # Inactivity timeout reached: automatically increment epoch to start clean new conversation
+            self.channel_sessions[key] = self.channel_sessions.get(key, 0) + 1
+            print(f"[Discord Gateway] ⏱️ Inactivity timeout reached for {key}. Advanced to session epoch {self.channel_sessions[key]}")
+
+        self.channel_last_activity[key] = now
         epoch = self.channel_sessions.get(key, 0)
         return f"remote-discord-{key}-{epoch}"
 
@@ -455,6 +471,7 @@ class DiscordGatewayDaemon:
         """Increments session epoch to reset context memory."""
         key = f"dm:{author_id}" if is_dm else f"chan:{channel_id}"
         self.channel_sessions[key] = self.channel_sessions.get(key, 0) + 1
+        self.channel_last_activity[key] = time.time()
         print(f"[Discord Gateway] 🔄 Reset context memory for {key} (New epoch: {self.channel_sessions[key]})")
 
     def query_sayri_core(self, prompt: str, user_name: str, session_id: Optional[str] = None) -> str:
