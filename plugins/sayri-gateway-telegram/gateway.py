@@ -47,6 +47,74 @@ def acquire_single_instance_lock() -> None:
     PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
+def markdown_to_telegram_html(text: str) -> str:
+    """Converts standard Markdown into Telegram Bot API valid HTML."""
+    if not text:
+        return ""
+    import html
+    import re
+
+    # 1. Protect code blocks
+    code_blocks = []
+    def _save_block(m):
+        lang = m.group(1) or ""
+        code = m.group(2)
+        idx = len(code_blocks)
+        escaped_code = html.escape(code)
+        if lang:
+            tag = f'<pre><code class="language-{html.escape(lang)}">{escaped_code}</code></pre>'
+        else:
+            tag = f'<pre>{escaped_code}</pre>'
+        code_blocks.append(tag)
+        return f"@@SAYRI_CODE_BLOCK_{idx}@@"
+
+    res = re.sub(r"```([a-zA-Z0-9_\-]+)?\n?(.*?)\n?```", _save_block, text, flags=re.DOTALL)
+
+    # 2. Protect inline code
+    inline_codes = []
+    def _save_inline(m):
+        code = m.group(1)
+        idx = len(inline_codes)
+        tag = f'<code>{html.escape(code)}</code>'
+        inline_codes.append(tag)
+        return f"@@SAYRI_INLINE_{idx}@@"
+
+    res = re.sub(r"`([^`\n]+)`", _save_inline, res)
+
+    # 3. Escape general HTML entities in text
+    res = html.escape(res, quote=False)
+
+    # 4. Convert markdown links: [text](url) -> <a href="url">text</a>
+    res = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'<a href="\2">\1</a>', res)
+
+    # 5. Bold: **text** or __text__
+    res = re.sub(r'\*\*([^\*\n]+?)\*\*', r'<b>\1</b>', res)
+    res = re.sub(r'__([^\_\n]+?)__', r'<b>\1</b>', res)
+
+    # 6. Italic: *text* or _text_
+    res = re.sub(r'(?<!\w)\*([^\*\n]+?)\*(?!\w)', r'<i>\1</i>', res)
+    res = re.sub(r'(?<!\w)_([^\_\n]+?)_(?!\w)', r'<i>\1</i>', res)
+
+    # 7. Strikethrough: ~~text~~
+    res = re.sub(r'~~([^~\n]+?)~~', r'<s>\1</s>', res)
+
+    # 8. Blockquotes: > line
+    def _sub_quote(m):
+        return f"<blockquote>{m.group(1).strip()}</blockquote>"
+    res = re.sub(r'^(?:&gt;|>)\s*(.+)$', _sub_quote, res, flags=re.MULTILINE)
+
+    # 9. Headers: # Header -> <b>Header</b>
+    res = re.sub(r'^(?:#{1,6})\s+(.+)$', r'<b>\1</b>', res, flags=re.MULTILINE)
+
+    # 10. Restore code blocks & inline code
+    for i, block in enumerate(code_blocks):
+        res = res.replace(f"@@SAYRI_CODE_BLOCK_{i}@@", block)
+    for i, inline in enumerate(inline_codes):
+        res = res.replace(f"@@SAYRI_INLINE_{i}@@", inline)
+
+    return res
+
+
 class TelegramClient:
     """Lightweight zero-dependency Telegram Bot API client."""
 
@@ -80,14 +148,39 @@ class TelegramClient:
             return res.get("result", [])
         return []
 
-    def send_message(self, chat_id: int, text: str, reply_to_message_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def send_message(self, chat_id: int, text: str, reply_to_message_id: Optional[int] = None, parse_mode: Optional[str] = "HTML") -> Optional[Dict[str, Any]]:
+        formatted = markdown_to_telegram_html(text) if parse_mode == "HTML" else text
         payload = {
             "chat_id": chat_id,
-            "text": text,
+            "text": formatted[:4000] if len(formatted) > 4000 else formatted,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
         res = self._api_call("sendMessage", payload)
+        # Fallback to plain text if HTML rendering is rejected by Telegram API
+        if (not res or not res.get("ok")) and parse_mode:
+            payload.pop("parse_mode", None)
+            payload["text"] = text[:4000] if len(text) > 4000 else text
+            res = self._api_call("sendMessage", payload)
+        return res
+
+    def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: Optional[str] = "HTML") -> Optional[Dict[str, Any]]:
+        formatted = markdown_to_telegram_html(text) if parse_mode == "HTML" else text
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": formatted[:4000] if len(formatted) > 4000 else formatted,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        res = self._api_call("editMessageText", payload)
+        # Fallback to plain text if HTML rendering is rejected by Telegram API
+        if (not res or not res.get("ok")) and parse_mode:
+            payload.pop("parse_mode", None)
+            payload["text"] = text[:4000] if len(text) > 4000 else text
+            res = self._api_call("editMessageText", payload)
         return res
 
     def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
@@ -149,12 +242,12 @@ class AuthorizationManager:
         if fail_count >= 5:
             cooldown_left = int(600 - (now - last_fail))
             print(f"[Auth Security] 🚨 Rate limit exceeded for user {user_id} ({cooldown_left}s remaining)")
-            return False, f"Demasiados intentos fallidos. Por favor, espera {cooldown_left} segundos antes de volver a intentar."
+            return False, f"Too many failed attempts. Please wait {cooldown_left} seconds before trying again."
 
         clean_pin = pin.replace(" ", "").replace("-", "").strip()
         print(f"[Auth] 🔍 Verifying candidate PIN for user @{username} (ID: {user_id})...")
         if not clean_pin:
-            return False, "Código PIN vacío."
+            return False, "PIN code is empty."
 
         # Check desktop shared PIN file (~/.config/sayri/pairing_pin.json)
         if SHARED_PIN_FILE.is_file():
@@ -186,19 +279,19 @@ class AuthorizationManager:
                     except Exception:
                         pass
 
-                    return True, "¡Emparejamiento completado con éxito! Tu cuenta ha sido autorizada en Sayri."
+                    return True, "Pairing completed successfully! Your account has been authorized in Sayri."
                 else:
                     self._failed_attempts[str(user_id)] = (fail_count + 1, now)
                     remaining = 5 - (fail_count + 1)
                     print(f"[Auth] ❌ PIN mismatch or expired for user {user_id}. Remaining attempts: {remaining}")
-                    return False, f"PIN incorrecto o expirado. Intentos restantes: {max(0, remaining)}"
+                    return False, f"Incorrect or expired PIN. Remaining attempts: {max(0, remaining)}"
             except Exception as e:
                 print(f"[Auth] Error checking shared pin file: {e}", file=sys.stderr)
         else:
             print(f"[Auth] ⚠️ PIN file not found at {SHARED_PIN_FILE}")
 
         self._failed_attempts[str(user_id)] = (fail_count + 1, now)
-        return False, "No se encontró un PIN de emparejamiento activo en el escritorio."
+        return False, "No active pairing PIN found on desktop."
 
 
 class SayriTelegramGateway:
@@ -279,39 +372,122 @@ class SayriTelegramGateway:
         }
         return new_session_id, True
 
-    def query_sayri_core(self, prompt: str, user_name: str, session_id: str) -> str:
-        """Sends query to Sayri IPC socket or evaluates locally."""
+    def query_sayri_core_stream(
+        self,
+        prompt: str,
+        user_name: str,
+        session_id: str,
+        chat_id: int,
+        reply_to_msg_id: Optional[int] = None,
+    ) -> None:
+        """Sends query to Sayri IPC socket and streams live tool execution & deltas directly to Telegram."""
+        # 1. Send initial thinking message
+        sent_msg = self.bot.send_message(
+            chat_id, "💭 *Thinking...*", reply_to_message_id=reply_to_msg_id
+        )
+        msg_id = (
+            sent_msg.get("result", {}).get("message_id")
+            if sent_msg and sent_msg.get("ok")
+            else None
+        )
+
         sock_path = self.find_sayri_socket()
-        if sock_path:
-            try:
-                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                client.settimeout(45.0)
-                client.connect(str(sock_path))
-                payload = {
-                    "type": "INCOMING_MSG",
-                    "author": user_name,
-                    "text": prompt,
-                    "target_agent": TARGET_AGENT,
-                    "sandbox_level": SANDBOX_LEVEL,
-                    "instance_id": INSTANCE_ID,
-                    "session_id": session_id,
-                }
-                client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        if not sock_path:
+            fallback = f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
+            if msg_id:
+                self.bot.edit_message_text(chat_id, msg_id, fallback)
+            else:
+                self.bot.send_message(chat_id, fallback, reply_to_message_id=reply_to_msg_id)
+            return
 
-                chunks = []
-                while True:
-                    data = client.recv(4096)
-                    if not data:
-                        break
-                    chunks.append(data.decode("utf-8", errors="replace"))
-                client.close()
-                response_data = "".join(chunks).strip()
-                if response_data:
-                    return response_data
-            except Exception as e:
-                print(f"[Gateway] Socket communication warning: {e}", file=sys.stderr)
+        status_prefix = ""
+        current_text = ""
+        last_edit_time = [time.time()]
+        last_sent_text = ["💭 *Thinking...*"]
 
-        return f"👋 Hola {user_name}! Sayri recibió tu mensaje: '{prompt}'."
+        def _update_ui(force: bool = False) -> None:
+            now = time.time()
+            if not force and (now - last_edit_time[0] < 0.8):
+                return
+            full_display = (status_prefix + current_text).strip()
+            if not full_display:
+                full_display = "💭 *Thinking...*"
+            if full_display != last_sent_text[0] and msg_id:
+                self.bot.edit_message_text(chat_id, msg_id, full_display)
+                last_sent_text[0] = full_display
+                last_edit_time[0] = now
+
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(120.0)
+            client.connect(str(sock_path))
+            payload = {
+                "type": "INCOMING_MSG",
+                "author": user_name,
+                "text": prompt,
+                "target_agent": TARGET_AGENT,
+                "sandbox_level": SANDBOX_LEVEL,
+                "instance_id": INSTANCE_ID,
+                "session_id": session_id,
+            }
+            client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+
+            buffer = ""
+            while True:
+                data = client.recv(4096)
+                if not data:
+                    break
+                buffer += data.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("{"):
+                        try:
+                            ev = json.loads(line)
+                            event_name = ev.get("event")
+                            if event_name == "tool_start":
+                                cmd = ev.get("command", "")
+                                status_prefix = f"⚙️ *Executing:* `{cmd[:60]}`…\n\n"
+                                _update_ui(force=True)
+                            elif event_name == "tool_finish":
+                                cmd = ev.get("command", "")
+                                code = ev.get("exit_code", 0)
+                                if code == 0:
+                                    status_prefix = f"⚙️ *Executed:* `{cmd[:60]}`\n\n"
+                                else:
+                                    status_prefix = f"⚠️ *Error ({code}):* `{cmd[:60]}`\n\n"
+                                _update_ui(force=True)
+                            elif event_name == "delta":
+                                current_text += ev.get("delta", "")
+                                _update_ui(force=False)
+                            elif event_name == "done":
+                                done_text = ev.get("text", "")
+                                if done_text:
+                                    current_text = done_text
+                                _update_ui(force=True)
+                            elif event_name == "error":
+                                err_msg = ev.get("error", "Unknown error")
+                                current_text = f"⚠️ Error: {err_msg}"
+                                _update_ui(force=True)
+                        except Exception as json_err:
+                            print(f"[Telegram] Event error: {json_err}", file=sys.stderr)
+                    else:
+                        current_text += line + "\n"
+                        _update_ui(force=False)
+
+            client.close()
+            _update_ui(force=True)
+
+        except Exception as e:
+            print(f"[Gateway] Socket communication warning: {e}", file=sys.stderr)
+            if not current_text:
+                fallback = f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
+                if msg_id:
+                    self.bot.edit_message_text(chat_id, msg_id, fallback)
+                else:
+                    self.bot.send_message(chat_id, fallback, reply_to_message_id=reply_to_msg_id)
 
     def handle_message(self, message: Dict[str, Any]) -> None:
         chat_id = message.get("chat", {}).get("id")
@@ -334,19 +510,19 @@ class SayriTelegramGateway:
                 if ok:
                     self.bot.send_message(
                         chat_id,
-                        f"🎉 {auth_reply}\nBienvenido @{username or user_id}! Ya estás autorizado para interactuar con Sayri.\n\n¿En qué te puedo ayudar?"
+                        f"🎉 {auth_reply}\nWelcome @{username or user_id}! You are now authorized to interact with Sayri.\n\nHow can I help you today?"
                     )
                     return
                 else:
                     self.bot.send_message(
                         chat_id,
-                        f"❌ {auth_reply}\nAbre Sayri en tu escritorio de Pulsar OS, ve a 'Gateways' -> 'Show Pairing PIN' y envía /pair <PIN> aquí."
+                        f"❌ {auth_reply}\nOpen Sayri on your Pulsar OS desktop, go to 'Gateways' -> 'Show Pairing PIN' and send /pair <PIN> here."
                     )
                     return
             else:
                 self.bot.send_message(
                     chat_id,
-                    "ℹ️ Uso: /pair <PIN> (ej. /pair 123456)\nConsulta el PIN en la ventana de Sayri en tu escritorio."
+                    "ℹ️ Usage: /pair <PIN> (e.g. /pair 123456)\nCheck the PIN in the Sayri desktop window."
                 )
                 return
 
@@ -375,14 +551,14 @@ class SayriTelegramGateway:
                 "last_activity": now,
                 "prev_session_id": prev_id,
             }
-            self.bot.send_message(chat_id, "✨ Nueva conversación iniciada. ¿De qué te gustaría hablar ahora?")
+            self.bot.send_message(chat_id, "✨ New conversation started. What would you like to talk about?")
             return
 
         if text.startswith(("/resume", "/continuar")):
             if not self.allow_resume_previous:
                 self.bot.send_message(
                     chat_id,
-                    "🔒 La reanudación de conversaciones anteriores está desactivada en los ajustes de este Gateway.\nPuedes habilitarla desde la ventana de Sayri en tu escritorio."
+                    "🔒 Resuming previous conversations is disabled in this Gateway's settings.\nYou can enable it from the Sayri desktop window."
                 )
                 return
 
@@ -392,12 +568,12 @@ class SayriTelegramGateway:
                 self._sessions[chat_id]["last_activity"] = now
                 self.bot.send_message(
                     chat_id,
-                    "🔄 Conversación anterior reanudada con éxito. Continuamos donde lo dejamos."
+                    "🔄 Previous conversation resumed successfully. Continuing where we left off."
                 )
             else:
                 self.bot.send_message(
                     chat_id,
-                    "ℹ️ No hay una conversación anterior reciente para reanudar en esta sesión."
+                    "ℹ️ No recent previous conversation found to resume in this session."
                 )
             return
 
@@ -405,20 +581,25 @@ class SayriTelegramGateway:
             timeout_min = int(self.inactivity_timeout / 60)
             self.bot.send_message(
                 chat_id,
-                f"🤖 Sayri Copilot Activo\n\n"
-                f"Hola @{user_display}! La conversación es continuada mientras estemos chateando.\n\n"
-                f"Comandos útiles:\n"
-                f"• /new - Iniciar un nuevo tema de conversación.\n"
-                f"• /resume - Reanudar la conversación anterior.\n\n"
-                f"⏳ Las conversaciones finalizan tras {timeout_min} min de inactividad."
+                f"🤖 Sayri Copilot Active\n\n"
+                f"Hello @{user_display}! Our conversation is continuous while we chat.\n\n"
+                f"Useful commands:\n"
+                f"• /new - Start a new conversation topic.\n"
+                f"• /resume - Resume the previous conversation.\n\n"
+                f"⏳ Conversations reset after {timeout_min} min of inactivity."
             )
             return
 
-        # 4. Resolve active session and forward query to Sayri Core
+        # 4. Resolve active session and forward query with live streaming to Sayri Core
         session_id, was_new = self._get_or_create_session(chat_id, user_display)
         self.bot.send_chat_action(chat_id, "typing")
-        reply = self.query_sayri_core(text, user_display, session_id=session_id)
-        self.bot.send_message(chat_id, reply, reply_to_message_id=message.get("message_id"))
+        self.query_sayri_core_stream(
+            text,
+            user_display,
+            session_id=session_id,
+            chat_id=chat_id,
+            reply_to_msg_id=message.get("message_id"),
+        )
 
     def run(self) -> None:
         print("[Sayri Telegram Gateway] Gateway started successfully.")

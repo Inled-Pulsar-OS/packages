@@ -104,12 +104,12 @@ class AuthorizationManager:
             return True, "owner"
 
         if is_dm:
-            return False, "🔒 **Acceso Denegado (DM)**\nSolo el propietario emparejado tiene permitido interactuar con Sayri por Mensaje Directo (DM).\nEn servidores, puedes hablarme en los canales autorizados si el propietario habilitó el acceso a invitados."
+            return False, "🔒 **Access Denied (DM)**\nOnly the paired desktop owner is allowed to interact with Sayri via Direct Message (DM).\nIn servers, you can talk to me in authorized channels if the owner has enabled guest access."
 
         if self.allow_channel_guests:
             return True, "guest"
 
-        return False, "🔒 **Acceso de Invitados Desactivado**\nEl propietario de este asistente no ha habilitado el acceso a invitados en este canal. Solo el usuario emparejado puede interactuar con Sayri."
+        return False, "🔒 **Guest Access Disabled**\nThe owner of this assistant has not enabled guest access in this channel. Only the paired owner can interact with Sayri."
 
     def set_guests_allowed(self, enabled: bool) -> None:
         self._load()
@@ -125,12 +125,12 @@ class AuthorizationManager:
         if fail_count >= 5:
             cooldown_left = int(600 - (now - last_fail))
             print(f"[Auth Security] 🚨 Rate limit exceeded for user {user_id} ({cooldown_left}s remaining)")
-            return False, f"Demasiados intentos fallidos. Espera {cooldown_left} segundos antes de volver a intentar."
+            return False, f"Too many failed attempts. Please wait {cooldown_left} seconds before trying again."
 
         clean_pin = pin.replace(" ", "").replace("-", "").strip()
         print(f"[Auth] 🔍 Verifying candidate PIN for Discord user {username} (ID: {user_id})...")
         if not clean_pin:
-            return False, "Código PIN vacío."
+            return False, "PIN code is empty."
 
         if SHARED_PIN_FILE.is_file():
             try:
@@ -158,19 +158,63 @@ class AuthorizationManager:
                     except Exception:
                         pass
 
-                    return True, "¡Emparejamiento completado con éxito! Tu cuenta de Discord ha sido autorizada como propietaria de Sayri."
+                    return True, "Pairing completed successfully! Your Discord account has been authorized as owner of Sayri."
                 else:
                     self._failed_attempts[str(user_id)] = (fail_count + 1, now)
                     remaining = 5 - (fail_count + 1)
                     print(f"[Auth] ❌ PIN mismatch or expired for user {user_id}. Remaining attempts: {remaining}")
-                    return False, f"PIN incorrecto o expirado. Intentos restantes: {max(0, remaining)}"
+                    return False, f"Incorrect or expired PIN. Remaining attempts: {max(0, remaining)}"
             except Exception as e:
                 print(f"[Auth] Error checking pin file: {e}", file=sys.stderr)
         else:
             print(f"[Auth] ⚠️ PIN file not found at {SHARED_PIN_FILE}")
 
         self._failed_attempts[str(user_id)] = (fail_count + 1, now)
-        return False, "No se encontró un PIN de emparejamiento activo en el escritorio."
+        return False, "No active pairing PIN found on desktop."
+
+
+def format_for_discord(content: str, max_len: int = 1900) -> List[str]:
+    """Formats and chunks standard Markdown text cleanly for Discord messages."""
+    if not content:
+        return []
+    import re
+
+    # Strip thinking tags
+    clean = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"<thought>.*?</thought>", "", clean, flags=re.DOTALL | re.IGNORECASE).strip()
+
+    if len(clean) <= max_len:
+        return [clean]
+
+    chunks = []
+    text = clean
+
+    while len(text) > max_len:
+        # Prefer breaking at paragraph or double newline
+        split_idx = text.rfind("\n\n", 0, max_len)
+        if split_idx == -1 or split_idx < max_len // 3:
+            split_idx = text.rfind("\n", 0, max_len)
+        if split_idx == -1 or split_idx < max_len // 3:
+            split_idx = max_len
+
+        chunk = text[:split_idx].strip()
+        text = text[split_idx:].strip()
+
+        # Check if an unclosed code block was split
+        code_fence_count = chunk.count("```")
+        if code_fence_count % 2 == 1:
+            # Code block started in this chunk but not closed
+            m_lang = re.search(r"```([a-zA-Z0-9_\-]+)?", chunk)
+            code_block_lang = m_lang.group(1) if m_lang and m_lang.group(1) else ""
+            chunk += "\n```"
+            text = f"```{code_block_lang}\n" + text
+
+        chunks.append(chunk)
+
+    if text:
+        chunks.append(text)
+
+    return chunks
 
 
 class DiscordRestClient:
@@ -269,20 +313,17 @@ class DiscordRestClient:
         """Acknowledges interaction with Type 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE)."""
         self.request("POST", f"/interactions/{interaction_id}/{interaction_token}/callback", {"type": 5})
 
+    def send_followup(self, application_id: str, interaction_token: str, content: str) -> None:
+        chunks = format_for_discord(content)
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                self.request("PATCH", f"/webhooks/{application_id}/{interaction_token}/messages/@original", {"content": chunk})
+            else:
+                self.request("POST", f"/webhooks/{application_id}/{interaction_token}", {"content": chunk})
+
     def edit_interaction_response(self, application_id: str, interaction_token: str, content: str) -> None:
         """Edits the original deferred interaction response with the final answer."""
-        max_len = 1900
-        chunks = []
-        text = content.strip()
-        while len(text) > max_len:
-            split_idx = text.rfind("\n", 0, max_len)
-            if split_idx == -1 or split_idx < max_len // 2:
-                split_idx = max_len
-            chunks.append(text[:split_idx].strip())
-            text = text[split_idx:].strip()
-        if text:
-            chunks.append(text)
-
+        chunks = format_for_discord(content)
         for i, chunk in enumerate(chunks):
             if i == 0:
                 self.request("PATCH", f"/webhooks/{application_id}/{interaction_token}/messages/@original", {"content": chunk})
@@ -291,18 +332,7 @@ class DiscordRestClient:
 
     def send_message(self, channel_id: str, content: str, reply_to_message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Sends a message to a Discord channel, splitting into chunks if necessary."""
-        max_len = 1900
-        chunks = []
-        text = content.strip()
-        while len(text) > max_len:
-            split_idx = text.rfind("\n", 0, max_len)
-            if split_idx == -1 or split_idx < max_len // 2:
-                split_idx = max_len
-            chunks.append(text[:split_idx].strip())
-            text = text[split_idx:].strip()
-        if text:
-            chunks.append(text)
-
+        chunks = format_for_discord(content)
         last_resp = None
         for i, chunk in enumerate(chunks):
             data: Dict[str, Any] = {"content": chunk}
@@ -313,6 +343,13 @@ class DiscordRestClient:
                 }
             last_resp = self.request("POST", f"/channels/{channel_id}/messages", data)
         return last_resp
+
+    def edit_message(self, channel_id: str, message_id: str, content: str) -> Optional[Dict[str, Any]]:
+        """Edits an existing Discord message."""
+        import re
+        clean = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+        truncated = clean[:1900] if len(clean) > 1900 else clean
+        return self.request("PATCH", f"/channels/{channel_id}/messages/{message_id}", {"content": truncated})
 
     def get_channel_messages(self, channel_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Fetches recent messages from a channel for summarization."""
@@ -474,8 +511,14 @@ class DiscordGatewayDaemon:
         self.channel_last_activity[key] = time.time()
         print(f"[Discord Gateway] 🔄 Reset context memory for {key} (New epoch: {self.channel_sessions[key]})")
 
-    def query_sayri_core(self, prompt: str, user_name: str, session_id: Optional[str] = None) -> str:
-        """Dispatches message to Sayri Core over local UNIX domain socket."""
+    def query_sayri_core_stream(
+        self,
+        prompt: str,
+        user_name: str,
+        session_id: Optional[str] = None,
+        on_update: Optional[Any] = None,
+    ) -> str:
+        """Dispatches message to Sayri Core and streams tool execution & deltas live to Discord."""
         candidate_sockets = [
             Path.home() / ".local" / "share" / "sayri" / "sayri.sock",
             Path(f"/run/user/{os.getuid()}/sayri.sock"),
@@ -489,38 +532,103 @@ class DiscordGatewayDaemon:
                 sock_path = cand
                 break
 
-        if sock_path:
-            try:
-                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                client.settimeout(35.0)
-                client.connect(str(sock_path))
+        if not sock_path:
+            fallback = f"👋 Hola {user_name}! Sayri ha recibido tu mensaje: '{prompt}'."
+            if on_update:
+                on_update(fallback, True)
+            return fallback
 
-                payload = {
-                    "type": "INCOMING_MSG",
-                    "text": prompt,
-                    "author": f"@{user_name}",
-                    "channel": "discord",
-                    "target_agent": TARGET_AGENT,
-                    "sandbox_level": SANDBOX_LEVEL,
-                    "instance_id": INSTANCE_ID,
-                    "session_id": session_id,
-                }
-                client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        status_prefix = ""
+        current_text = ""
+        last_edit_time = [time.time()]
+        last_sent_text = [""]
 
-                chunks = []
-                while True:
-                    data = client.recv(4096)
-                    if not data:
-                        break
-                    chunks.append(data.decode("utf-8", errors="replace"))
-                client.close()
-                response_data = "".join(chunks).strip()
-                if response_data:
-                    return response_data
-            except Exception as e:
-                print(f"[Discord Gateway] Socket communication error on {sock_path}: {e}", file=sys.stderr)
+        def _trigger_update(force: bool = False) -> None:
+            if not on_update:
+                return
+            now = time.time()
+            if not force and (now - last_edit_time[0] < 0.8):
+                return
+            full_display = (status_prefix + current_text).strip()
+            if not full_display:
+                full_display = "💭 *Pensando...*"
+            if full_display != last_sent_text[0]:
+                on_update(full_display, force)
+                last_sent_text[0] = full_display
+                last_edit_time[0] = now
 
-        return f"👋 Hola {user_name}! Sayri ha recibido tu mensaje: '{prompt}'."
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(120.0)
+            client.connect(str(sock_path))
+
+            payload = {
+                "type": "INCOMING_MSG",
+                "text": prompt,
+                "author": f"@{user_name}",
+                "channel": "discord",
+                "target_agent": TARGET_AGENT,
+                "sandbox_level": SANDBOX_LEVEL,
+                "instance_id": INSTANCE_ID,
+                "session_id": session_id,
+            }
+            client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+
+            buffer = ""
+            while True:
+                data = client.recv(4096)
+                if not data:
+                    break
+                buffer += data.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("{"):
+                        try:
+                            ev = json.loads(line)
+                            event_name = ev.get("event")
+                            if event_name == "tool_start":
+                                cmd = ev.get("command", "")
+                                status_prefix = f"⚙️ **Executing:** `{cmd[:60]}`…\n\n"
+                                _trigger_update(force=True)
+                            elif event_name == "tool_finish":
+                                cmd = ev.get("command", "")
+                                code = ev.get("exit_code", 0)
+                                if code == 0:
+                                    status_prefix = f"⚙️ **Executed:** `{cmd[:60]}`\n\n"
+                                else:
+                                    status_prefix = f"⚠️ **Error ({code}):** `{cmd[:60]}`\n\n"
+                                _trigger_update(force=True)
+                            elif event_name == "delta":
+                                current_text += ev.get("delta", "")
+                                _trigger_update(force=False)
+                            elif event_name == "done":
+                                done_text = ev.get("text", "")
+                                if done_text:
+                                    current_text = done_text
+                                _trigger_update(force=True)
+                            elif event_name == "error":
+                                err_msg = ev.get("error", "Unknown error")
+                                current_text = f"⚠️ Error: {err_msg}"
+                                _trigger_update(force=True)
+                        except Exception as json_err:
+                            print(f"[Discord Gateway] Event error: {json_err}", file=sys.stderr)
+                    else:
+                        current_text += line + "\n"
+                        _trigger_update(force=False)
+
+            client.close()
+            _trigger_update(force=True)
+            return (status_prefix + current_text).strip()
+
+        except Exception as e:
+            print(f"[Discord Gateway] Socket error: {e}", file=sys.stderr)
+            fallback = f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
+            if on_update:
+                on_update(fallback, True)
+            return fallback
 
     def handle_discord_interaction(self, interaction: Dict[str, Any], bot_user: Dict[str, Any]) -> None:
         """Handles native Discord Slash Commands (/sayri, /new, /guests, /pair, /resume)."""
@@ -541,7 +649,7 @@ class DiscordGatewayDaemon:
 
         print(f"[Discord Gateway] Slash Command /{cmd_name} from @{username} (ID: {user_id}) in #{channel_id}")
 
-        # 1. Acknowledge with Deferred response ("Sayri está pensando...")
+        # 1. Acknowledge with Deferred response ("Sayri is thinking...")
         self.rest.respond_interaction_defer(inter_id, inter_token)
 
         # 2. Command: /pair <pin>
@@ -549,9 +657,9 @@ class DiscordGatewayDaemon:
             pin_val = str(options.get("pin", "")).strip()
             ok, auth_reply = self.auth.verify_pairing_pin(pin_val, user_id, username)
             if ok:
-                msg = f"🎉 **{auth_reply}**\n¡Bienvenido <@{user_id}>! Ya estás autorizado como propietario de Sayri.\n\n¿En qué te puedo ayudar hoy?"
+                msg = f"🎉 **{auth_reply}**\nWelcome <@{user_id}>! You are now authorized as owner of Sayri.\n\nHow can I help you today?"
             else:
-                msg = f"❌ **{auth_reply}**\nAbre Sayri en tu escritorio de Pulsar OS, ve a 'Gateways' -> 'Show Pairing PIN' y usa `/pair <PIN>`."
+                msg = f"❌ **{auth_reply}**\nOpen Sayri on your Pulsar OS desktop, go to 'Gateways' -> 'Show Pairing PIN' and use `/pair <PIN>`."
             self.rest.edit_interaction_response(app_id, inter_token, msg)
             return
 
@@ -559,20 +667,20 @@ class DiscordGatewayDaemon:
         if cmd_name == "guests":
             if not self.auth.is_owner(user_id, username):
                 self.rest.edit_interaction_response(
-                    app_id, inter_token, "🔒 **Solo el propietario emparejado** puede configurar el acceso a invitados."
+                    app_id, inter_token, "🔒 **Only the paired owner** can configure guest access."
                 )
                 return
             if "enabled" in options:
                 val = bool(options["enabled"])
                 self.auth.set_guests_allowed(val)
-                state = "🟢 **Activado**" if val else "🔴 **Desactivado (Kill Switch Activo)**"
+                state = "🟢 **Enabled**" if val else "🔴 **Disabled (Kill Switch Active)**"
                 self.rest.edit_interaction_response(
-                    app_id, inter_token, f"👥 **Acceso de Invitados**: {state}\nLos miembros del servidor {'ahora pueden' if val else 'ya no pueden'} interactuar con Sayri en canales públicos."
+                    app_id, inter_token, f"👥 **Guest Access**: {state}\nServer members {'can now' if val else 'can no longer'} interact with Sayri in public channels."
                 )
             else:
-                current = "🟢 **Activado**" if self.auth.allow_channel_guests else "🔴 **Desactivado (Solo Propietario)**"
+                current = "🟢 **Enabled**" if self.auth.allow_channel_guests else "🔴 **Disabled (Owner Only)**"
                 self.rest.edit_interaction_response(
-                    app_id, inter_token, f"ℹ️ **Estado de Invitados**: {current}\nUsa `/guests enabled:True` o `/guests enabled:False` para cambiarlo."
+                    app_id, inter_token, f"ℹ️ **Guest Status**: {current}\nUse `/guests enabled:True` or `/guests enabled:False` to change it."
                 )
             return
 
@@ -585,7 +693,7 @@ class DiscordGatewayDaemon:
 
             self.reset_channel_session(channel_id, user_id, is_dm)
             self.rest.edit_interaction_response(
-                app_id, inter_token, "🔄 **Nueva conversación iniciada.**\nHe reseteado la memoria de este chat. ¿En qué puedo ayudarte ahora?"
+                app_id, inter_token, "🔄 **New conversation started.**\nI have reset the context memory for this channel. What would you like help with?"
             )
             return
 
@@ -602,50 +710,52 @@ class DiscordGatewayDaemon:
             if recent_msgs:
                 history_lines = []
                 for m in reversed(recent_msgs):
-                    m_author = m.get("author", {}).get("username", "Usuario")
+                    m_author = m.get("author", {}).get("username", "User")
                     m_text = m.get("content", "").strip()
                     if m_text and not m.get("author", {}).get("bot"):
                         history_lines.append(f"- {m_author}: {m_text}")
                 history_context = "\n".join(history_lines)
                 prompt = (
-                    f"[Historial reciente del canal de Discord #{channel_id} (últimos {len(history_lines)} mensajes)]:\n"
+                    f"[Recent channel history for Discord channel #{channel_id} (last {len(history_lines)} messages)]:\n"
                     f"{history_context}\n\n"
-                    f"[Instrucción]: Genera un resumen claro, estructurado y conciso de lo conversado en el canal."
+                    f"[Instruction]: Generate a clear, structured, and concise summary of the conversation in this channel."
                 )
             else:
-                prompt = "Genera un breve resumen de bienvenida al canal."
+                prompt = "Generate a brief welcome summary of the channel."
 
             session_id = self.get_channel_session_id(channel_id, user_id, is_dm)
-            reply = self.query_sayri_core(prompt, username, session_id=session_id)
-            self.rest.edit_interaction_response(app_id, inter_token, reply)
+            def _on_resume_update(text_chunk: str, is_done: bool) -> None:
+                self.rest.edit_interaction_response(app_id, inter_token, text_chunk)
+
+            self.query_sayri_core_stream(prompt, username, session_id=session_id, on_update=_on_resume_update)
             return
 
         # 7. Command: /sayri <message>
         if cmd_name == "sayri":
             prompt = str(options.get("message") or options.get("mensaje") or "").strip()
-            summary_triggers = ["resume", "resumen", "qué han dicho", "que han dicho", "lee los mensajes", "lee el canal", "últimos mensajes"]
+            summary_triggers = ["resume", "resumen", "what did they say", "read the messages", "read channel", "latest messages", "summary"]
             if any(trig in prompt.lower() for trig in summary_triggers):
                 recent_msgs = self.rest.get_channel_messages(channel_id, limit=20)
                 if recent_msgs:
                     history_lines = []
                     for m in reversed(recent_msgs):
-                        m_author = m.get("author", {}).get("username", "Usuario")
+                        m_author = m.get("author", {}).get("username", "User")
                         m_text = m.get("content", "").strip()
                         if m_text and not m.get("author", {}).get("bot"):
                             history_lines.append(f"- {m_author}: {m_text}")
                     if history_lines:
                         prompt = (
-                            f"[Historial reciente del canal de Discord #{channel_id}]:\n"
+                            f"[Recent channel history for Discord channel #{channel_id}]:\n"
                             f"{chr(10).join(history_lines)}\n\n"
-                            f"[Instrucción del usuario @{username}]:\n{prompt}"
+                            f"[User @{username}'s instruction]:\n{prompt}"
                         )
 
             session_id = self.get_channel_session_id(channel_id, user_id, is_dm)
-            reply = self.query_sayri_core(prompt, username, session_id=session_id)
-            
-            # Format public response showing author question and Sayri reply
-            final_formatted = f"> **@{username}**: {prompt}\n\n{reply}" if not is_dm else reply
-            self.rest.edit_interaction_response(app_id, inter_token, final_formatted)
+            def _on_sayri_update(text_chunk: str, is_done: bool) -> None:
+                formatted = f"> **@{username}**: {prompt}\n\n{text_chunk}" if not is_dm else text_chunk
+                self.rest.edit_interaction_response(app_id, inter_token, formatted)
+
+            self.query_sayri_core_stream(prompt, username, session_id=session_id, on_update=_on_sayri_update)
             return
 
     def handle_discord_message(self, message: Dict[str, Any], bot_user: Dict[str, Any]) -> None:
@@ -696,7 +806,7 @@ class DiscordGatewayDaemon:
         clean_text = re.sub(r"^@?sayri[:,]?\s*", "", clean_text, flags=re.IGNORECASE).strip()
 
         if not clean_text:
-            clean_text = "Hola Sayri, ¿en qué puedes ayudarme?"
+            clean_text = "Hello Sayri, how can you help me today?"
 
         print(f"[Discord Gateway] 📩 Query from @{username} (ID: {user_id}) in #{channel_id}: '{clean_text}'")
 
@@ -709,19 +819,19 @@ class DiscordGatewayDaemon:
                 if ok:
                     self.rest.send_message(
                         channel_id,
-                        f"🎉 **{auth_reply}**\n¡Bienvenido <@{user_id}>! Ya estás autorizado como propietario de Sayri.\n\n¿En qué te puedo ayudar hoy?",
+                        f"🎉 **{auth_reply}**\nWelcome <@{user_id}>! You are now authorized as owner of Sayri.\n\nHow can I help you today?",
                         reply_to_message_id=msg_id,
                     )
                 else:
                     self.rest.send_message(
                         channel_id,
-                        f"❌ **{auth_reply}**\nAbre Sayri en tu escritorio de Pulsar OS, ve a 'Gateways' -> 'Show Pairing PIN' y escribe `/pair <PIN>`.",
+                        f"❌ **{auth_reply}**\nOpen Sayri on your Pulsar OS desktop, go to 'Gateways' -> 'Show Pairing PIN' and type `/pair <PIN>`.",
                         reply_to_message_id=msg_id,
                     )
             else:
                 self.rest.send_message(
                     channel_id,
-                    "ℹ️ **Uso**: `/pair <PIN>` (ej. `/pair 123456`)\nConsulta el PIN en la ventana de Sayri en tu escritorio.",
+                    "ℹ️ **Usage**: `/pair <PIN>` (e.g. `/pair 123456`)\nCheck the PIN in the Sayri desktop window.",
                     reply_to_message_id=msg_id,
                 )
             return
@@ -735,7 +845,7 @@ class DiscordGatewayDaemon:
             self.reset_channel_session(channel_id, user_id, is_dm)
             self.rest.send_message(
                 channel_id,
-                "🔄 **Nueva conversación iniciada.**\nHe reseteado la memoria de este chat. ¿En qué puedo ayudarte ahora?",
+                "🔄 **New conversation started.**\nI have reset the context memory for this chat. How can I help you now?",
                 reply_to_message_id=msg_id,
             )
             return
@@ -743,17 +853,17 @@ class DiscordGatewayDaemon:
         # 5. Guests Command (/guests o !guests)
         if clean_text.startswith(("/guests", "!guests")):
             if not self.auth.is_owner(user_id, username):
-                self.rest.send_message(channel_id, "🔒 **Solo el propietario emparejado** puede configurar el acceso a invitados.", reply_to_message_id=msg_id)
+                self.rest.send_message(channel_id, "🔒 **Only the paired owner** can configure guest access.", reply_to_message_id=msg_id)
                 return
             parts = clean_text.split()
             if len(parts) > 1:
-                val = parts[1].lower() in ("on", "true", "1", "activar", "si", "sí")
+                val = parts[1].lower() in ("on", "true", "1", "enable", "enabled", "yes")
                 self.auth.set_guests_allowed(val)
-                state = "🟢 **Activado**" if val else "🔴 **Desactivado (Kill Switch Activo)**"
-                self.rest.send_message(channel_id, f"👥 **Acceso de Invitados**: {state}\nLos miembros del servidor {'ahora pueden' if val else 'ya no pueden'} interactuar con Sayri en canales públicos.", reply_to_message_id=msg_id)
+                state = "🟢 **Enabled**" if val else "🔴 **Disabled (Kill Switch Active)**"
+                self.rest.send_message(channel_id, f"👥 **Guest Access**: {state}\nServer members {'can now' if val else 'can no longer'} interact with Sayri in public channels.", reply_to_message_id=msg_id)
             else:
-                current = "🟢 **Activado**" if self.auth.allow_channel_guests else "🔴 **Desactivado (Solo Propietario)**"
-                self.rest.send_message(channel_id, f"ℹ️ **Estado de Invitados**: {current}\nUsa `!guests on` o `!guests off` para cambiarlo.", reply_to_message_id=msg_id)
+                current = "🟢 **Enabled**" if self.auth.allow_channel_guests else "🔴 **Disabled (Owner Only)**"
+                self.rest.send_message(channel_id, f"ℹ️ **Guest Status**: {current}\nUse `!guests on` or `!guests off` to change it.", reply_to_message_id=msg_id)
             return
 
         # 6. Check interaction authorization with strict DM protection
@@ -767,27 +877,43 @@ class DiscordGatewayDaemon:
 
         # 7. Summarization auto-trigger in text
         prompt = clean_text
-        summary_triggers = ["resume", "resumen", "qué han dicho", "que han dicho", "lee los mensajes", "lee el canal", "últimos mensajes"]
+        summary_triggers = ["resume", "resumen", "what did they say", "read the messages", "read channel", "latest messages", "summary"]
         if any(trig in prompt.lower() for trig in summary_triggers) and not is_dm:
             recent_msgs = self.rest.get_channel_messages(channel_id, limit=20)
             if recent_msgs:
                 history_lines = []
                 for m in reversed(recent_msgs):
-                    m_author = m.get("author", {}).get("username", "Usuario")
+                    m_author = m.get("author", {}).get("username", "User")
                     m_text = m.get("content", "").strip()
                     if m_text and not m.get("author", {}).get("bot") and m.get("id") != msg_id:
                         history_lines.append(f"- {m_author}: {m_text}")
                 if history_lines:
                     prompt = (
-                        f"[Historial reciente del canal de Discord #{channel_id}]:\n"
+                        f"[Recent channel history for Discord channel #{channel_id}]:\n"
                         f"{chr(10).join(history_lines)}\n\n"
-                        f"[Instrucción del usuario @{username}]:\n{clean_text}"
+                        f"[User @{username}'s instruction]:\n{clean_text}"
                     )
 
         # 8. Continuous conversation with Sayri Core
         session_id = self.get_channel_session_id(channel_id, user_id, is_dm)
-        reply = self.query_sayri_core(prompt, username, session_id=session_id)
-        self.rest.send_message(channel_id, reply, reply_to_message_id=msg_id)
+        placeholder = self.rest.send_message(channel_id, "💭 *Thinking...*", reply_to_message_id=msg_id)
+        placeholder_id = str(placeholder.get("id")) if placeholder and placeholder.get("id") else None
+
+        last_edit_time = [0.0]
+        last_text = [""]
+
+        def _on_msg_update(text_chunk: str, is_done: bool) -> None:
+            now = time.time()
+            if not is_done and (now - last_edit_time[0] < 0.8):
+                return
+            if placeholder_id and text_chunk != last_text[0]:
+                self.rest.edit_message(channel_id, placeholder_id, text_chunk)
+                last_text[0] = text_chunk
+                last_edit_time[0] = now
+            elif not placeholder_id and is_done:
+                self.rest.send_message(channel_id, text_chunk, reply_to_message_id=msg_id)
+
+        self.query_sayri_core_stream(prompt, username, session_id=session_id, on_update=_on_msg_update)
 
     def run(self) -> None:
         """Main connection and dispatch loop."""
