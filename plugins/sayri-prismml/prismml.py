@@ -13,9 +13,11 @@ only :mod:`urllib`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -37,8 +39,28 @@ FAMILIES = ["ternary", "bonsai"]
 SIZES = ["27B", "8B", "4B", "1.7B"]
 DEFAULT_PORT = 8080
 
+# sha256 digests of every llama-server asset we can download, taken from the
+# GitHub release (asset .digest) for `TAG`. Unknown/unsigned assets are refused.
+BINARY_SHA256: dict[str, str] = {
+    "macos-arm64": "786654a675e6197f39893a5c8379c2f7f9dd0a300a7771c003ea496a639e711b",
+    "macos-x64": "08d5dbd53183801f38456f5c49fb660f5c09652eb55ef10457d97b4b93c5b37f",
+    "ubuntu-x64": "966793cc310262ede1b630b13812415f25e868aa6621621eeb10cb8ecb229b5c",
+    "ubuntu-arm64": "8a4159348b4395a8b06043637f2d4c26463fd46758c50c6dc0171d50ca813b5f",
+    "ubuntu-vulkan-x64": "54cb7ceabb52a6dfc59caadcc5eee9178c164641dbda7a5dbae4fec20825bc29",
+    "ubuntu-vulkan-arm64": "8e9f4e107c72888c102e0330ae74043e7a5a710d177366a04afcda07e899f9d6",
+    "ubuntu-rocm-7.2-x64": "9e2f0964bc2923aa4b81a1dda2cf5fb1330534463ba6251c92b34821a53d7d90",
+    "linux-cuda-12.4-x64": "ced7ebb1c5830e85fb2b704ca35c0075afe9c9a0934833baa2319e66d22a8dc5",
+    "win-cpu-x64": "c87e4ae315d17b8ef9695001db7ad0f9eb8ab275c33d11c02395c64d844fe764",
+    "win-cpu-arm64": "7fd9be8d2709a5c32cac2619b360bd0ebb2235d489e5b24d7b3649e2c78c6b10",
+    "win-cuda-12.4-x64": "2785963016926c09e113137cc9a889a63a1f9dfc037e4069b1aacd5c5b87cdf3",
+    "win-vulkan-x64": "f7946dec15b27fcffe6b6f78a7f67d1ec96075010903b12d09fc5ae2c6d776a7",
+    "win-hip-radeon-x64": "5cf04f7f89b597065bff5f46e0abcc6e8a93d200f76097fa2866dcd93c485f87",
+}
+
 Progress = Callable[[Optional[float]], None]
 Log = Callable[[list], None]
+
+_HOST_RE = re.compile(r"^[A-Za-z0-9_.\-:\[\]]+$")
 
 
 def _env_path(key: str, default: str) -> Path:
@@ -103,6 +125,25 @@ def model_repo(family: str, size: str) -> str:
     return f"prism-ml/{prefix}-{size}-gguf"
 
 
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_sha256(path: Path, want: str, label: str) -> None:
+    """Assert the file matches the pinned sha256; delete it otherwise."""
+    got = sha256_file(path)
+    if got.lower() != str(want).lower():
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(f"Integrity check failed for {label}: expected {want}, got {got}")
+
+
 def _download(url: str, dest: Path, progress: Optional[Progress] = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "sayri-prismml/1.0"})
@@ -129,6 +170,20 @@ def fetch_model_files(repo: str) -> list[str]:
         data = json.loads(resp.read().decode("utf-8"))
     files = [s["rfilename"] for s in data.get("siblings", [])]
     return [f for f in files if f.lower().endswith(".gguf")]
+
+
+def fetch_model_oid(repo: str, filename: str) -> Optional[str]:
+    """LFS sha256 of a GGUF file from the HF tree API (None if unknown)."""
+    url = f"{HF_BASE}/api/models/{repo}/tree/main?recursive=true"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "sayri-prismml/1.0"}), timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    for e in data:
+        if e.get("path") == filename and isinstance(e.get("lfs"), dict):
+            return e["lfs"].get("oid")
+    return None
 
 
 def pick_model_file(repo: str, size: str) -> Optional[str]:
@@ -174,6 +229,12 @@ def install_model(family: str, size: str, progress: Optional[Progress] = None,
     url = f"{HF_BASE}/{repo}/resolve/main/{name}"
     (log or (lambda _m: None))([f"Downloading {repo} · {name}"])
     _download(url, dest, progress=progress)
+    if os.environ.get("PRISM_SKIP_INTEGRITY", "").strip().lower() not in ("1", "true", "yes"):
+        oid = fetch_model_oid(repo, name)
+        if oid:
+            verify_sha256(dest, oid, f"{repo} · {name}")
+        else:
+            (log or (lambda _m: None))(["⚠ No checksum available — integrity not verified"])
     return dest
 
 # ------------------------------------------------------------------- binaries
@@ -254,8 +315,12 @@ def install_binary(progress: Optional[Progress] = None, log: Optional[Log] = Non
     asset, ext = release_asset()
     url = _release_asset_url(asset, ext)
     archive = bin_dir() / f"{asset}.{ext}"
+    want = BINARY_SHA256.get(asset)
+    if not want:
+        raise RuntimeError(f"No pinned checksum for asset {asset} — refusing to install")
     (log or (lambda _m: None))([f"Downloading llama-server binary ({asset})"])
     _download(url, archive, progress=progress)
+    verify_sha256(archive, want, f"llama-server binary ({asset})")
     if ext == "zip":
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
@@ -316,20 +381,46 @@ class Server:
             return False
         family = self.config.get("family", "ternary")
         size = self.config.get("size", "8B")
+        if family not in FAMILIES:
+            (log or (lambda _m: None))([f"Invalid family '{family}' (choose one of: {', '.join(FAMILIES)})"])
+            return False
+        if size not in SIZES:
+            (log or (lambda _m: None))([f"Invalid size '{size}' (choose one of: {', '.join(SIZES)})"])
+            return False
         model = model_file(family, size)
         if not model.is_file():
             (log or (lambda _m: None))([f"Model missing {model.name}: run 'download'"])
             return False
+        host = str(self.config.get("host", "127.0.0.1"))
+        if not _HOST_RE.match(host):
+            (log or (lambda _m: None))([f"Invalid host '{host}'"])
+            return False
+        try:
+            port = int(self.config.get("port", DEFAULT_PORT))
+        except (TypeError, ValueError):
+            (log or (lambda _m: None))(["Invalid port; expected an integer"])
+            return False
+        if not (1 <= port <= 65535):
+            (log or (lambda _m: None))([f"Invalid port {port} (must be 1–65535)"])
+            return False
+        try:
+            ctx = int(self.config.get("ctx_size", 4096))
+        except (TypeError, ValueError):
+            ctx = 4096
+        params_file = self.config.get("params_file") or ""
+        if params_file and not os.path.isfile(params_file):
+            (log or (lambda _m: None))([f"Params file not found: {params_file}"])
+            return False
         gpu = detect_gpu()
         args = [
             str(binary), "-m", str(model),
-            "--host", str(self.config.get("host", "127.0.0.1")),
-            "--port", str(self.config.get("port", DEFAULT_PORT)),
-            "--ctx-size", str(self.config.get("ctx_size", 4096)),
+            "--host", host,
+            "--port", str(port),
+            "--ctx-size", str(max(128, ctx)),
             "-ngl", "99" if gpu != "cpu" else "0",
         ]
-        if self.config.get("params_file"):
-            args += ["--paramsfile", self.config["params_file"]]
+        if params_file:
+            args += ["--paramsfile", params_file]
         args += ["--log-file", str(root_dir() / "server.log")] if os.environ.get("PRISM_DEBUG") else []
         root_dir().mkdir(parents=True, exist_ok=True)
         (log or (lambda _m: None))(["Starting llama-server…"])
