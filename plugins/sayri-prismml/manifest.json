@@ -1,0 +1,38 @@
+{
+  "id": "sayri-prismml",
+  "name": "Prism ML Server",
+  "version": "0.1.1",
+  "author": "jaimegh-es",
+  "description": "Local Prism ML model server (mirrors PrismML-Eng/Bonsai-demo). Auto-detects your GPU (CUDA / ROCm / Vulkan / CPU), downloads the llama.cpp binaries and the Bonsai / Ternary-Bonsai GGUF models (1.7B / 4B / 8B / 27B), and runs llama-server on localhost with a /health endpoint. Includes a welcome-style wizard in the terminal (sayri-prismml wizard) and a browser panel (sayri-prismml serve).",
+  "entrypoint": "gateway.py",
+  "sandbox_level": "LEVEL_3_HOST_USER",
+  "required_secrets": [],
+  "authorization": {
+    "mode": "none"
+  },
+  "ui": {
+    "sync_instructions": "Open a terminal and run:\n\n  sayri-prismml wizard      # interactive wizard (install and start)\n  sayri-prismml status      # server status\n",
+    "chat_url": "http://127.0.0.1:8080",
+    "actions": [
+      {
+        "id": "prism_status",
+        "label": "Server status",
+        "type": "sync_exec",
+        "command": "sayri-prismml status"
+      }
+    ]
+  },
+  "ai_providers": [
+    {
+      "value": "bonsai",
+      "label": "Prism ML · Bonsai (local)",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "bonsai-8b",
+      "key": false
+    }
+  ],
+  "capabilities": [
+    "run_local_process",
+    "http_server"
+  ]
+}
