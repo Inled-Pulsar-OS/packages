@@ -113,14 +113,14 @@ def cmd_run(args) -> int:
     size = cfg.get("size", "8B")
     quant = cfg.get("quant", "") or ""
     if not prismml.llama_server_bin().is_file():
-        print("Installing binary…")
-        prismml.install_binary(progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end=""))
-        print()
+        print("Installing binary…", flush=True)
+        prismml.install_binary(progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end="", flush=True))
+        print(flush=True)
     if not prismml.model_file(family, size, quant).is_file():
-        print("Downloading model…")
+        print("Downloading model…", flush=True)
         prismml.install_model(family, size, quant,
-                              progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end=""))
-        print()
+                              progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end="", flush=True))
+        print(flush=True)
     if not prismml.Server(cfg).start():
         print("  the server did not respond; see ~/.local/share/sayri/prismml/server.log")
         return 1
