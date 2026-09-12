@@ -44,6 +44,7 @@ def cmd_status(_args) -> int:
     st = prismml.Server().status_payload()
     print(f"family:       {st['family']} / {st['size']} / {st['quant'].upper()}")
     print(f"GPU:          {st['gpu']}")
+    print(f"auto-start:   {'enabled' if st['enabled'] else 'disabled'}")
     print(f"binary:       {'installed' if st['binary'] else 'pending'}")
     print(f"model:        {'downloaded' if st['model'] else 'pending'}")
     print(f"server:       {'running (PID %s)' % st['pid'] if st['running'] else 'stopped'}")

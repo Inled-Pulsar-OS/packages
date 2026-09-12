@@ -10,8 +10,16 @@
   "authorization": {
     "mode": "none"
   },
+  "service": {
+    "auto_start": true,
+    "enabled": true,
+    "enabled_label": "Run this server when Sayri starts",
+    "start": ["gateway.py", "start"],
+    "stop": ["gateway.py", "stop"],
+    "status": ["gateway.py", "status"]
+  },
   "ui": {
-    "sync_instructions": "Open a terminal and run:\n\n  sayri-prismml wizard      # interactive wizard (install and start)\n  sayri-prismml status      # server status\n",
+    "sync_instructions": "Server status: sayri plugins status sayri-prismml\nStart/stop:  sayri plugins start|stop sayri-prismml\nInteractive: sayri-prismml wizard\n",
     "chat_url": "http://127.0.0.1:8080",
     "settings_file": "prismml.json",
     "settings": [

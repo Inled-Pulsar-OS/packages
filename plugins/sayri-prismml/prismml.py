@@ -105,6 +105,7 @@ DEFAULTS: dict[str, Any] = {
     "ctx_size": 4096,
     "params_file": "",
     "gpu_override": "",
+    "enabled": True,
 }
 
 
@@ -131,6 +132,15 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.data.get(key, default)
+
+    def as_bool(self, key: str, default: bool = False) -> bool:
+        """Config value as a bool, tolerant of string forms from the UI."""
+        v = self.data.get(key, default)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        return str(v).strip().lower() in ("1", "true", "yes", "on", "si")
 
     def set(self, key: str, value: Any) -> None:
         self.data[key] = value
@@ -270,23 +280,36 @@ def model_file(family: str, size: str, quant: str = "") -> Path:
 
 
 def resolve_model_file(family: str, size: str, quant: str = "") -> Optional[Path]:
-    """The GGUF that actually exists for this family/size. Tries the exact
-    name, then the family default quant, then any ``{family}-{size}*`` file."""
-    cands: list[Path] = [model_file(family, size, quant)]
-    if not quant:
-        dq = DEFAULT_QUANT.get(family, "pq2_0")
-        if dq:
-            cands.append(model_file(family, size, dq))
+    """The GGUF that actually exists for this family/size.
+
+    Prefers the explicit quantization, then the family default quant, then
+    ``Q1_0`` and finally *any* quantized ``{family}-{size}-*`` file. The legacy
+    base name (``{family}-{size}.gguf``) is only used as a last resort, so a
+    stale/incomplete single-file download can never shadow a good quantized
+    model.
+    """
+    models = root_dir() / "models"
+    cands: list[Path] = []
+    if quant:
+        cands.append(model_file(family, size, quant))
+    dq = DEFAULT_QUANT.get(family, "pq2_0")
+    if dq:
+        cands.append(model_file(family, size, dq))
     cands.append(model_file(family, size, "q1_0"))
     for c in cands:
         if c.is_file() and c.stat().st_size > 1_000_000:
             return c
-    models = root_dir() / "models"
     try:
-        found = sorted(models.glob(f"{family}-{size}*.gguf")) if models.is_dir() else []
+        found = sorted(models.glob(f"{family}-{size}-*.gguf")) if models.is_dir() else []
     except Exception:  # noqa: BLE001
         found = []
-    return found[0] if found and found[0].is_file() and found[0].stat().st_size > 1_000_000 else None
+    for f in found:
+        if f.is_file() and f.stat().st_size > 1_000_000:
+            return f
+    legacy = models / f"{family}-{size}.gguf"
+    if legacy.is_file() and legacy.stat().st_size > 1_000_000:
+        return legacy
+    return None
 
 
 def install_model(family: str, size: str, quant: str = "",
@@ -612,6 +635,7 @@ class Server:
             "model": model.is_file(),
             "model_path": str(model),
             "port": cfg.get("port"),
+            "enabled": cfg.as_bool("enabled", True),
         }
 
 def pid_alive(pid: int) -> bool:
