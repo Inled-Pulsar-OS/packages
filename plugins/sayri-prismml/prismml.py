@@ -31,7 +31,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-TAG = os.environ.get("PRISM_TAG", "prism-b10660-e311ed3")
+TAG = os.environ.get("PRISM_TAG", "prism-b10683-d8f26ee")
 HF_BASE = os.environ.get("PRISM_HF_BASE", "https://huggingface.co")
 GH_API = os.environ.get("PRISM_GH_API", "https://api.github.com")
 
@@ -57,19 +57,19 @@ DEFAULT_QUANT: dict[str, str] = {"ternary": "pq2_0", "bonsai": "q1_0"}
 # sha256 digests of every llama-server asset we can download, taken from the
 # GitHub release (asset .digest) for `TAG`. Unknown/unsigned assets are refused.
 BINARY_SHA256: dict[str, str] = {
-    "macos-arm64": "786654a675e6197f39893a5c8379c2f7f9dd0a300a7771c003ea496a639e711b",
-    "macos-x64": "08d5dbd53183801f38456f5c49fb660f5c09652eb55ef10457d97b4b93c5b37f",
-    "ubuntu-x64": "966793cc310262ede1b630b13812415f25e868aa6621621eeb10cb8ecb229b5c",
-    "ubuntu-arm64": "8a4159348b4395a8b06043637f2d4c26463fd46758c50c6dc0171d50ca813b5f",
-    "ubuntu-vulkan-x64": "54cb7ceabb52a6dfc59caadcc5eee9178c164641dbda7a5dbae4fec20825bc29",
-    "ubuntu-vulkan-arm64": "8e9f4e107c72888c102e0330ae74043e7a5a710d177366a04afcda07e899f9d6",
-    "ubuntu-rocm-7.2-x64": "9e2f0964bc2923aa4b81a1dda2cf5fb1330534463ba6251c92b34821a53d7d90",
-    "linux-cuda-12.4-x64": "ced7ebb1c5830e85fb2b704ca35c0075afe9c9a0934833baa2319e66d22a8dc5",
-    "win-cpu-x64": "c87e4ae315d17b8ef9695001db7ad0f9eb8ab275c33d11c02395c64d844fe764",
-    "win-cpu-arm64": "7fd9be8d2709a5c32cac2619b360bd0ebb2235d489e5b24d7b3649e2c78c6b10",
-    "win-cuda-12.4-x64": "2785963016926c09e113137cc9a889a63a1f9dfc037e4069b1aacd5c5b87cdf3",
-    "win-vulkan-x64": "f7946dec15b27fcffe6b6f78a7f67d1ec96075010903b12d09fc5ae2c6d776a7",
-    "win-hip-radeon-x64": "5cf04f7f89b597065bff5f46e0abcc6e8a93d200f76097fa2866dcd93c485f87",
+    "macos-arm64": "0ae163ca2c9cce92470316ed743f76985beea4d5cf31b8dc546711cf6fc8dd35",
+    "macos-x64": "29e16154c9feab99fa5b4d2a5cced3d86557ce3f37f0597ebdf0825fc77c680b",
+    "ubuntu-x64": "68ff1c860aafc1fc45bb18e90e19147e3fd086bd6724da088418e874fcc004c2",
+    "ubuntu-arm64": "9cc6edaae0fb60a3c5a36cea25bd8449866a5fba61f26bff9f68ac0371d6caa8",
+    "ubuntu-vulkan-x64": "0cf2c404ad89ac42c46bbe0e3288f4a16b00a4bbed1807e5e1d8c7f6294dc2ce",
+    "ubuntu-vulkan-arm64": "faef2c408c9506bdd74895ac5531a06b71e8f51f926905a9f2cad0be261511ac",
+    "ubuntu-rocm-7.2-x64": "019741d3b585a6aca360ff3da8a001c56fa0696c39ab8ca4affa3dc4cb5212da",
+    "linux-cuda-12.4-x64": "fd437bf65ce449c77a40edee99c61365f7d548120a6c63657744d4971c9b80b6",
+    "win-cpu-x64": "3d68c36d5743c06e7334a2c2da2cebf2b4c4c230f706db69ef095a7a1419a8e0",
+    "win-cpu-arm64": "191ecca1b1eea0702038f56b88a6e563d7d74051456c175415da6cffc209598c",
+    "win-cuda-12.4-x64": "07a4c945779bda6b0e12e51ad97c55858e126ea903bfdb3053a16cd29d2f2257",
+    "win-vulkan-x64": "5559fd0903975a83929bbf76cb9b895a5fcb2f8af449d53563f837890ebc8476",
+    "win-hip-radeon-x64": "1c14bfee085128a74c52fbd5dda9564ddc67f63e1d64e166465f23f76c6812b4",
 }
 
 Progress = Callable[[Optional[float]], None]
@@ -269,6 +269,26 @@ def model_file(family: str, size: str, quant: str = "") -> Path:
     return root_dir() / "models" / f"{family}-{size}.gguf"
 
 
+def resolve_model_file(family: str, size: str, quant: str = "") -> Optional[Path]:
+    """The GGUF that actually exists for this family/size. Tries the exact
+    name, then the family default quant, then any ``{family}-{size}*`` file."""
+    cands: list[Path] = [model_file(family, size, quant)]
+    if not quant:
+        dq = DEFAULT_QUANT.get(family, "pq2_0")
+        if dq:
+            cands.append(model_file(family, size, dq))
+    cands.append(model_file(family, size, "q1_0"))
+    for c in cands:
+        if c.is_file() and c.stat().st_size > 1_000_000:
+            return c
+    models = root_dir() / "models"
+    try:
+        found = sorted(models.glob(f"{family}-{size}*.gguf")) if models.is_dir() else []
+    except Exception:  # noqa: BLE001
+        found = []
+    return found[0] if found and found[0].is_file() and found[0].stat().st_size > 1_000_000 else None
+
+
 def install_model(family: str, size: str, quant: str = "",
                   progress: Optional[Progress] = None,
                   log: Optional[Log] = None) -> Path:
@@ -290,13 +310,26 @@ def install_model(family: str, size: str, quant: str = "",
     return dest
 
 # ------------------------------------------------------------------- binaries
+def _cuda_runtime_available() -> bool:
+    """True only if the CUDA runtime .so sonames are actually loadable."""
+    try:
+        out = subprocess.check_output(
+            ["ldconfig", "-p"], stderr=subprocess.DEVNULL, text=True
+        )
+        hay = out
+    except Exception:  # noqa: BLE001
+        hay = ""
+    return all(hay.find(f"lib{s}.so.12") >= 0 for s in ("cudart", "cublas"))
+
+
 def detect_gpu() -> str:
     override = os.environ.get("PRISM_GPU", "").strip().lower()
     if override:
         return override if override in ("cuda", "rocm", "vulkan", "cpu") else "cpu"
     for probe in ("nvcc", "nvidia-smi"):
         if shutil.which(probe):
-            return "cuda"
+            # a driver without the runtime libs cannot load the CUDA build
+            return "cuda" if _cuda_runtime_available() else "cpu"
     if shutil.which("rocminfo"):
         return "rocm"
     if shutil.which("vulkaninfo"):
@@ -345,7 +378,7 @@ def platform_asset() -> str:
 
 
 def _release_asset_url(asset: str, ext: str) -> str:
-    base = os.environ.get("PRISM_RELEASE_URL", "https://github.com/prismml/llama.cpp/releases/download")
+    base = os.environ.get("PRISM_RELEASE_URL", "https://github.com/PrismML-Eng/llama.cpp/releases/download")
     return f"{base}/{TAG}/llama-{TAG}-bin-{asset}.{ext}"
 
 
@@ -356,6 +389,43 @@ def bin_dir() -> Path:
 def llama_server_bin() -> Path:
     name = "llama-server.exe" if platform.system().lower() == "windows" else "llama-server"
     return bin_dir() / name
+
+
+def _flatten_bin_dir(bin_dir_: Path) -> None:
+    """Move everything from nested release dirs up to ``bin_dir_``/ root.
+
+    The PrismML release archives ship a single top-level folder
+    (e.g. ``llama-prism-b10683-d8f26ee/``) that contains the binaries and the
+    ``*.so`` libraries they dlopen. We move every entry (files and symlinks)
+    up one level, then recreate soname symlinks (``libX.so.N``) from the fully
+    versioned names (``libX.so.N.M``) that the tarball may only have as
+    relative symlinks between one another.
+    """
+    subdirs = [p for p in bin_dir_.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    for sub in subdirs:
+        for entry in list(sub.rglob("*")):
+            if entry.is_dir():
+                continue
+            flat = bin_dir_ / entry.name
+            if entry.parent != bin_dir_ and not flat.exists():
+                try:
+                    entry.rename(flat)
+                except OSError:
+                    pass
+    import re as _re
+    for lib in list(bin_dir_.glob("lib*.so.*")):
+        m = _re.match(r"^(lib.*\.so)\.(\d+)\.(\d+)", lib.name)
+        if not m or not lib.is_file():
+            continue
+        ver = f"{m.group(1)}.{m.group(2)}"
+        plain = m.group(1)
+        for target in (ver, plain):
+            ln = bin_dir_ / target
+            if not ln.exists() and not ln.is_symlink():
+                try:
+                    ln.symlink_to(lib.name)
+                except OSError:
+                    pass
 
 
 def install_binary(progress: Optional[Progress] = None, log: Optional[Log] = None) -> Path:
@@ -375,25 +445,20 @@ def install_binary(progress: Optional[Progress] = None, log: Optional[Log] = Non
     verify_sha256(archive, want, f"llama-server binary ({asset})")
     if ext == "zip":
         with zipfile.ZipFile(archive) as zf:
-            for name in zf.namelist():
-                if os.path.basename(name).lower() == dest.name.lower():
-                    zf.extract(name, bin_dir())
-                    src = bin_dir() / name
-                    if str(src.resolve()) != str(dest.resolve()):
-                        src.replace(dest)
-                    break
+            zf.extractall(bin_dir())
     else:
         with tarfile.open(archive) as tf:
-            for m in tf.getmembers():
-                leaf = os.path.basename(m.name)
-                if leaf in ("llama-server", "llama-server.exe"):
-                    tf.extract(m, bin_dir())
-                    src = bin_dir() / m.name
-                    if not src.is_file():
-                        src = bin_dir() / leaf
-                    if str(src.resolve()) != str(dest.resolve()):
-                        src.replace(dest)
-                    break
+            tf.extractall(bin_dir())
+    _flatten_bin_dir(bin_dir())
+    # locate llama-server, respecting Windows exe name
+    dest_candidates = [dest, bin_dir() / "llama-server", bin_dir() / "llama-server.exe"]
+    for candidate in dest_candidates:
+        if candidate.is_file():
+            if candidate != dest:
+                candidate.replace(dest)
+            break
+    else:
+        raise RuntimeError("llama-server binary not found in archive")
     if not is_win:
         dest.chmod(0o755)
     (log or (lambda _m: None))([f"llama-server installed ✓"])
@@ -443,9 +508,10 @@ class Server:
         if quant and quant not in QUANTS.get(family, []):
             (log or (lambda _m: None))([f"Invalid quant '{quant}' for family '{family}' (use: {', '.join(QUANTS[family])})"])
             return False
-        model = model_file(family, size, quant)
-        if not model.is_file():
-            (log or (lambda _m: None))([f"Model missing {model.name}: run 'download'"])
+        model = resolve_model_file(family, size, quant)
+        if model is None:
+            name = model_file(family, size, quant).name
+            (log or (lambda _m: None))([f"Model missing {name}: run 'download'"])
             return False
         host = str(self.config.get("host", "127.0.0.1"))
         if not _HOST_RE.match(host):
