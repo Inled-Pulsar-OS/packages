@@ -25,9 +25,18 @@ except ImportError as exc:  # pragma: no cover - only when run outside the plugi
     raise
 
 
+def _quant_opts(family: str) -> list:
+    """Select options for a family using the real quant list + descriptions."""
+    quants = prismml.QUANTS.get(family, prismml.QUANTS["ternary"])
+    return [
+        {"value": q, "label": q.upper(), "desc": prismml.QUANT_LABELS.get(q, q)}
+        for q in quants
+    ]
+
+
 FAMILY_OPTS = [
     {"value": "ternary", "label": "Ternary-Bonsai", "desc": "quantized ternary mode (recommended, PQ2_0)"},
-    {"value": "bonsai", "label": "Bonsai", "desc": "classic GGUF quantization (Q1_0)"},
+    {"value": "bonsai", "label": "Bonsai", "desc": "classic 1-bit GGUF quantization (Q1_0)"},
 ]
 
 SIZE_OPTS = [
@@ -39,15 +48,23 @@ SIZE_OPTS = [
 
 PANEL_TITLE = "Prism ML · Sayri"
 
+STEPS_TOTAL = 4
+
+
+def _quant_display(family: str, quant: str) -> str:
+    q = prismml.effective_quant(family, quant or "", default=True)
+    return prismml.QUANT_LABELS.get(q, q.upper())
+
 
 class PrismWizard:
-    """Runs in the terminal (TUI), the browser panel and the HTTP endpoint."""
+    """Wizard host — runs in the terminal (TUI), the browser panel and HTTP."""
 
     def __init__(self) -> None:
         self.cfg = prismml.Config()
         self.val: dict = {
             "family": self.cfg.get("family", "ternary"),
             "size": self.cfg.get("size", "8B"),
+            "quant": self.cfg.get("quant", "") or "",
             "port": self.cfg.get("port", 8080),
             "download_bin": True,
             "download_model": True,
@@ -60,7 +77,7 @@ class PrismWizard:
 
     # ------------------------------------------------------------ screens
     def _step_label(self, n: int) -> str:
-        return f"Step {n}/3"
+        return f"Step {n}/{STEPS_TOTAL}"
 
     def _status(self) -> dict:
         return prismml.Server(self.cfg).status_payload()
@@ -68,7 +85,7 @@ class PrismWizard:
     def _status_screen(self, done: bool = False) -> dict:
         st = self._status()
         body: list = [
-            xui.text(f"Family {st['family']} · {st['size']}", accent=True),
+            xui.text(f"Family {st['family']} · {st['size']} · {st['quant'].upper()}", accent=True),
             xui.sub(f"GPU: {st['gpu']}  ·  port {st['port']}"),
         ]
         msgs = []
@@ -92,8 +109,10 @@ class PrismWizard:
         if self.idx == 1:
             return self._family_screen()
         if self.idx == 2:
-            return self._size_screen()
+            return self._quant_screen()
         if self.idx == 3:
+            return self._size_screen()
+        if self.idx == 4:
             return self._runtime_screen()
         return self._final or self._status_screen(done=True)
 
@@ -101,10 +120,9 @@ class PrismWizard:
         body = [
             xui.text("Welcome to the Prism ML server", accent=True),
             xui.sub("Runs a Bonsai model fully locally."),
-            xui.text(self._status_body_lines()[0], dim=True),
-            xui.text(self._status_body_lines()[1], dim=True),
-            xui.note(f"Detected GPU: {prismml.detect_gpu()}", "info"),
         ]
+        body += [xui.text(line, dim=True) for line in self._status_body_lines()]
+        body.append(xui.note(f"Detected GPU: {prismml.detect_gpu()}", "info"))
         footer = [
             xui.button("run", "Install & run", kind="primary"),
             xui.button("conf", "Configure"),
@@ -115,41 +133,99 @@ class PrismWizard:
     def _status_body_lines(self) -> list:
         st = self._status()
         return [
-            f"model {st['family']}/{st['size']}: {'✓' if st['model'] else '✗'}  binary: {'✓' if st['binary'] else '✗'}",
+            f"model {st['family']}/{st['size']} ({st['quant'].upper()}): {'✓' if st['model'] else '✗'}  binary: {'✓' if st['binary'] else '✗'}",
             f"server: {'running (PID %s)' % st['pid'] if st['running'] else 'stopped'} · {st['endpoint']}",
         ]
 
+    def _detect_body(self) -> dict:
+        """Real download state for the current selection (family/size/quant)."""
+        family = self.val.get("family", "ternary")
+        size = self.val.get("size", "8B")
+        quant = self.val.get("quant", "") or ""
+        binary_ok = prismml.llama_server_bin().is_file()
+        model_ok = prismml.model_file(family, size, quant).is_file()
+        lines = []
+        lines.append(f"llama-server binary: {'✓ already downloaded' if binary_ok else '✗ not downloaded'}")
+        lines.append(f"model ({size}, {quant.upper() or 'auto'}): {'✓ already downloaded' if model_ok else '✗ not downloaded'}")
+        return {"binary": binary_ok, "model": model_ok, "lines": lines}
+
     def _family_screen(self) -> dict:
+        body = [xui.select("family", "Model family", FAMILY_OPTS, self.val.get("family", "ternary"))]
+        body.append(xui.note(
+            "On the next step you can choose quantization and size. "
+            "Anything already downloaded is detected and reused.", "info"))
         return xui.screen(
             "Choose the family",
-            [xui.select("family", "Model family", FAMILY_OPTS, self.val.get("family", "ternary"))],
+            body,
             footer=[xui.button("back", "Back"), xui.button("next", "Next", kind="primary")],
             id="family", step=self._step_label(1),
         )
 
+    def _quant_screen(self) -> dict:
+        family = self.val.get("family", "ternary")
+        opts = _quant_opts(family)
+        low = self.val.get("quant", "") or ""
+        if low not in prismml.QUANTS.get(family, []):
+            low = prismml.DEFAULT_QUANT.get(family, "pq2_0")
+        body = [
+            xui.select("quant", "Quantization", opts, low),
+        ]
+        if family == "bonsai":
+            body.append(xui.note("Bonsai is a 1-bit model: Q1_0 is the only option.", "info"))
+        else:
+            body.append(xui.note(
+                "PQ2_0 is the recommended one (lightest). F16 gives the best quality but is several "
+                "times larger. The choice decides which .gguf file gets downloaded.", "info"))
+        det = self._detect_body()
+        body.append(xui.text("\n".join(det["lines"]), dim=True))
+        return xui.screen(
+            "Quantization",
+            body,
+            footer=[xui.button("back", "Back"), xui.button("next", "Next", kind="primary")],
+            id="quant", step=self._step_label(2),
+        )
+
     def _size_screen(self) -> dict:
+        family = self.val.get("family", "ternary")
+        quant = self.val.get("quant", "") or ""
+        body = [xui.select("size", "Size", SIZE_OPTS, self.val.get("size", "8B"))]
+        det = self._detect_body()
+        if det["model"]:
+            body.append(xui.note(f"✓ The {self.val.get('size', '8B')} ({quant.upper() or 'auto'}) model is already downloaded — it will be reused.", "info"))
+        else:
+            body.append(xui.text("\n".join(det["lines"]), dim=True))
         return xui.screen(
             "Model size",
-            [xui.select("size", "Size", SIZE_OPTS, self.val.get("size", "8B"))],
+            body,
             footer=[xui.button("back", "Back"), xui.button("next", "Next", kind="primary")],
-            id="size", step=self._step_label(2),
+            id="size", step=self._step_label(3),
         )
 
     def _runtime_screen(self) -> dict:
         binary_ok = prismml.llama_server_bin().is_file()
-        quant = "PQ2_0" if self.val.get("family", "ternary") == "ternary" else "Q1_0"
+        family = self.val.get("family", "ternary")
+        quant = _quant_display(family, self.val.get("quant", "") or "")
+        body = [
+            xui.note(f"Detected GPU: {prismml.detect_gpu()} — platform {prismml.platform_asset()}", "info"),
+            xui.entry("port", "Port", default=str(self.val.get("port", 8080)),
+                      placeholder="8080", hint="Endpoint /health at http://127.0.0.1:<port>"),
+        ]
+        det = self._detect_body()
+        if det["binary"] and det["model"]:
+            body.append(xui.note("✓ Everything is already downloaded: 'Install & run' will reuse it without downloading again.", "info"))
+        else:
+            body.append(xui.text("\n".join(det["lines"]), dim=True))
+            body.append(xui.note("You'll see ✓ marks for what you already have: it continues from there.", "info"))
+        body += [
+            xui.check("download_bin", "Download llama-server binary (~100 MB)", default=bool(self.val.get("download_bin", not binary_ok))),
+            xui.check("download_model", f"Download the GGUF model ({quant})", default=bool(self.val.get("download_model", True))),
+            xui.check("start_after", "Start the server when done", default=bool(self.val.get("start_after", True))),
+        ]
         return xui.screen(
             "Runtime and downloads",
-            [
-                xui.note(f"Detected GPU: {prismml.detect_gpu()} — platform {prismml.platform_asset()}", "info"),
-                xui.entry("port", "Port", default=str(self.val.get("port", 8080)),
-                          placeholder="8080", hint="Endpoint /health at http://127.0.0.1:<port>"),
-                xui.check("download_bin", "Download llama-server binary (~100 MB)", default=bool(self.val.get("download_bin", not binary_ok))),
-                xui.check("download_model", f"Download the GGUF model ({quant})", default=bool(self.val.get("download_model", True))),
-                xui.check("start_after", "Start the server when done", default=bool(self.val.get("start_after", True))),
-            ],
-            footer=[xui.button("back", "Back"), xui.button("run", "Run & download", kind="primary")],
-            id="runtime", step=self._step_label(3),
+            body,
+            footer=[xui.button("back", "Back"), xui.button("run", "Install & run", kind="primary")],
+            id="runtime", step=self._step_label(STEPS_TOTAL),
         )
 
     # ------------------------------------------------------------ events
@@ -186,7 +262,7 @@ class PrismWizard:
 
     def _progress_screen(self) -> dict:
         info = self.task.poll()
-        body: list = [xui.text("One moment…", accent=True), ]
+        body: list = [xui.text("One moment…", accent=True)]
         lines = list(info["log"][-6:])
         if info["running"]:
             body.append(xui.progress(info["log"][-1] if info["log"] else "Downloading…", info["progress"]))
@@ -219,7 +295,7 @@ class PrismWizard:
         if wid in ("next", "siguiente"):
             return self._on_submit(value)
         if wid == "retry":
-            self.idx = 3
+            self.idx = 4
             return self.render()
         if wid == "open":
             try:
@@ -227,20 +303,28 @@ class PrismWizard:
             except Exception:  # noqa: BLE001
                 pass
             return None
-        if wid in ("quit", "close"):
+        if wid in ("quit", "close", "cerrar"):
             return None
         return self.render()
 
     def _on_submit(self, value: dict) -> Optional[dict]:
         if self.idx == 1:
             if value.get("family"):
-                self.val["family"] = str(value["family"])
+                family = str(value["family"])
+                self.val["family"] = family
+                if self.val.get("quant", "") not in prismml.QUANTS.get(family, []):
+                    self.val["quant"] = prismml.DEFAULT_QUANT.get(family, "pq2_0")
             self.idx = 2
             return self.render()
         if self.idx == 2:
+            if value.get("quant"):
+                self.val["quant"] = str(value["quant"])
+            self.idx = 3
+            return self.render()
+        if self.idx == 3:
             if value.get("size"):
                 self.val["size"] = str(value["size"])
-            self.idx = 3
+            self.idx = 4
             return self.render()
         return self.render()
 
@@ -248,6 +332,8 @@ class PrismWizard:
         for key in ("family", "size"):
             if value.get(key):
                 self.val[key] = str(value[key])
+        if value.get("quant"):
+            self.val["quant"] = str(value["quant"])
         port = value.get("port")
         if port:
             try:
@@ -260,6 +346,7 @@ class PrismWizard:
         self.cfg.merge({
             "family": self.val.get("family"),
             "size": self.val.get("size"),
+            "quant": self.val.get("quant", ""),
             "port": self.val.get("port"),
         })
         self.cfg.save()
@@ -274,15 +361,16 @@ class PrismWizard:
     def _task_all(self, progress: Callable, log: Callable) -> Any:
         family = self.cfg.get("family", "ternary")
         size = self.cfg.get("size", "8B")
+        quant = self.cfg.get("quant", "") or ""
         is_win = platform.system().lower() == "windows"
         binary_missing = not (prismml.llama_server_bin().is_file() and (is_win or os.access(prismml.llama_server_bin(), os.X_OK)))
-        model_missing = not prismml.model_file(family, size).is_file()
+        model_missing = not prismml.model_file(family, size, quant).is_file()
         if self.val.get("download_bin", True) or binary_missing:
             prismml.install_binary(progress=progress, log=log)
         else:
             log(["llama-server binary already installed ✓"])
         if self.val.get("download_model", True) or model_missing:
-            prismml.install_model(family, size, progress=progress, log=log)
+            prismml.install_model(family, size, quant, progress=progress, log=log)
         else:
             log(["Model already downloaded ✓"])
         if self.val.get("start_after", True):

@@ -42,7 +42,7 @@ def _progress(label: str) -> tuple:
 
 def cmd_status(_args) -> int:
     st = prismml.Server().status_payload()
-    print(f"family:       {st['family']} / {st['size']}")
+    print(f"family:       {st['family']} / {st['size']} / {st['quant'].upper()}")
     print(f"GPU:          {st['gpu']}")
     print(f"binary:       {'installed' if st['binary'] else 'pending'}")
     print(f"model:        {'downloaded' if st['model'] else 'pending'}")
@@ -67,9 +67,10 @@ def cmd_install(_args) -> int:
 def cmd_download(args) -> int:
     family = args.family or prismml.Config().get("family", "ternary")
     size = args.size or prismml.Config().get("size", "8B")
-    p, l = _progress(f"model {family}/{size}")
+    quant = args.quant or prismml.Config().get("quant", "") or ""
+    p, l = _progress(f"model {family}/{size}/{quant or 'auto'}")
     try:
-        prismml.install_model(family, size, progress=p, log=l)
+        prismml.install_model(family, size, quant, progress=p, log=l)
         print("\n  model ready ✓")
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -85,6 +86,10 @@ def cmd_start(args) -> int:
             cfg.save()
         except ValueError:
             pass
+    if args.quant:
+        cfg.set("quant", args.quant)
+        cfg.save()
+
     ok = prismml.Server(cfg).start(log=lambda lines: [print("  ·", ln) for ln in lines])
     st = prismml.Server(cfg).status_payload()
     print("  server " + ("running ✓" if ok and st["running"] else "unconfirmed / failed"))
@@ -104,13 +109,16 @@ def cmd_restart(args) -> int:
 
 def cmd_run(args) -> int:
     cfg = prismml.Config()
+    family = cfg.get("family", "ternary")
+    size = cfg.get("size", "8B")
+    quant = cfg.get("quant", "") or ""
     if not prismml.llama_server_bin().is_file():
         print("Installing binary…")
         prismml.install_binary(progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end=""))
         print()
-    if not prismml.model_file(cfg.get("family", "ternary"), cfg.get("size", "8B")).is_file():
+    if not prismml.model_file(family, size, quant).is_file():
         print("Downloading model…")
-        prismml.install_model(cfg.get("family", "ternary"), cfg.get("size", "8B"),
+        prismml.install_model(family, size, quant,
                               progress=lambda v: print(f"\r  {int((v or 0)*100):3d}%", end=""))
         print()
     if not prismml.Server(cfg).start():
@@ -143,6 +151,8 @@ def cmd_info(_args) -> int:
     print(f"root:           {prismml.root_dir()}")
     print(f"binary:         {prismml.llama_server_bin()}")
     print(f"family/size:    {cfg.get('family')} / {cfg.get('size')}")
+    print(f"quant:          {cfg.get('quant') or 'auto'}")
+    print(f"model file:     {prismml.model_file(cfg.get('family'), cfg.get('size'), cfg.get('quant', '') or '')}")
     print(f"HF repo:        {prismml.model_repo(cfg.get('family'), cfg.get('size'))}")
     return 0
 
@@ -156,11 +166,17 @@ def build_parser() -> argparse.ArgumentParser:
     dl = sub.add_parser("download", help="download the GGUF model")
     dl.add_argument("family", nargs="?", choices=prismml.FAMILIES)
     dl.add_argument("size", nargs="?", choices=prismml.SIZES)
+    dl.add_argument("--quant", choices=sum(prismml.QUANTS.values(), []),
+                    help="explicit quantization (default: auto per family)")
     st = sub.add_parser("start", help="start llama-server")
     st.add_argument("--port", type=int)
+    st.add_argument("--quant", choices=sum(prismml.QUANTS.values(), []),
+                    help="explicit quantization (default: auto per family)")
+    rt = sub.add_parser("run", help="download what is missing and run llama-server in the foreground")
+    rt.add_argument("--quant", choices=sum(prismml.QUANTS.values(), []),
+                    help="explicit quantization (default: auto per family)")
     sub.add_parser("stop", help="stop llama-server")
     sub.add_parser("restart", help="restart llama-server")
-    sub.add_parser("run", help="download what is missing and run llama-server in the foreground")
     sub.add_parser("open", help="open the endpoint in the browser")
     sub.add_parser("info", help="paths, GPU and repos")
     sv = sub.add_parser("serve", help="web panel with the wizard (xui)")

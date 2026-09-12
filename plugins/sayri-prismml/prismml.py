@@ -39,6 +39,21 @@ FAMILIES = ["ternary", "bonsai"]
 SIZES = ["27B", "8B", "4B", "1.7B"]
 DEFAULT_PORT = 8080
 
+# Quantization levels available per family (slug → human label). Bonsai is a
+# 1-bit model (Q1_0 only); Ternary-Bonsai ships PQ2_0 / Q2_0_g64 / Q2_0 / F16.
+QUANTS: dict[str, list[str]] = {
+    "ternary": ["pq2_0", "q2_0_g64", "q2_0", "f16"],
+    "bonsai": ["q1_0"],
+}
+QUANT_LABELS: dict[str, str] = {
+    "pq2_0": "PQ2_0 — lightest ternary (recommended)",
+    "q2_0_g64": "Q2_0_g64 — grouped quant, good balance",
+    "q2_0": "Q2_0 — classic 2-bit ternary",
+    "f16": "F16 — best quality, largest",
+    "q1_0": "Q1_0 — 1-bit Bonsai (only option)",
+}
+DEFAULT_QUANT: dict[str, str] = {"ternary": "pq2_0", "bonsai": "q1_0"}
+
 # sha256 digests of every llama-server asset we can download, taken from the
 # GitHub release (asset .digest) for `TAG`. Unknown/unsigned assets are refused.
 BINARY_SHA256: dict[str, str] = {
@@ -84,12 +99,24 @@ def config_file() -> Path:
 DEFAULTS: dict[str, Any] = {
     "family": "ternary",
     "size": "8B",
+    "quant": "",
     "host": "127.0.0.1",
     "port": DEFAULT_PORT,
     "ctx_size": 4096,
     "params_file": "",
     "gpu_override": "",
 }
+
+
+def effective_quant(family: str, quant: str = "", default: bool = False) -> str:
+    """Quantization slug actually used. Fallback per family when ``quant`` is
+    empty/invalid: ``DEFAULT_QUANT`` (unless ``default`` is False and ``quant``
+    is empty → keep the legacy single-file name)."""
+    if quant and quant in QUANTS.get(family, []):
+        return quant
+    if default:
+        return DEFAULT_QUANT.get(family, "pq2_0")
+    return quant or ""
 
 
 class Config:
@@ -186,27 +213,43 @@ def fetch_model_oid(repo: str, filename: str) -> Optional[str]:
     return None
 
 
-def pick_model_file(repo: str, size: str) -> Optional[str]:
-    """Pick the lightest default GGUF for the family.
+def pick_model_file(repo: str, size: str, quant: str = "") -> Optional[str]:
+    """Pick the GGUF for the family/size, honouring an explicit quantization.
 
     Bonsai (1-bit) ships a ``Q1_0`` file; Ternary-Bonsai ships ``PQ2_0`` /
-    ``Q2_0_g64`` / ``Q2_0`` / ``F16``. Fall back to any file mentioning the
-    size, then to the first available file.
+    ``Q2_0_g64`` / ``Q2_0`` / ``F16``. With ``quant`` set, only that exact
+    quantization is matched; otherwise the lightest preferred variant wins.
+    Fall back to any file mentioning the size, then to the first file.
     """
     family = "ternary" if "ternary" in repo.lower() else "bonsai"
     low = size.lower()
+    quant = effective_quant(family, quant, default=True)
+
+    def _exact(name: str) -> bool:
+        n = name.lower()
+        if f"-{quant}.gguf" in n:
+            return True
+        if quant == "q2_0":
+            return "pq2_0" not in n and "q2_0_g64" not in n and quant in n
+        return quant in n
+
     try:
         files = fetch_model_files(repo)
     except Exception:  # noqa: BLE001
         # offline fallback: guess the canonical path
-        return (f"Bonsai-{low}-q1_0.gguf" if family == "bonsai"
-                else f"Ternary-Bonsai-{low}-q2_0.gguf")
+        if family == "bonsai":
+            return f"Bonsai-{low}-{quant}.gguf"
+        return f"Ternary-Bonsai-{low}-{quant.upper() if quant in ('f16',) else quant.upper()}.gguf"
     if not files:
         return None
-    preferred = ["q1_0"] if family == "bonsai" else ["pq2_0", "q2_0_g64", "q2_0", "f16"]
-    for quant in preferred:
+    if quant:
         for f in files:
-            if quant in f.lower() and low in f.lower():
+            if _exact(f) and low in f.lower():
+                return f
+    preferred = ["q1_0"] if family == "bonsai" else ["pq2_0", "q2_0_g64", "q2_0", "f16"]
+    for q in preferred:
+        for f in files:
+            if q in f.lower() and low in f.lower():
                 return f
     for f in files:
         if low in f.lower():
@@ -214,15 +257,24 @@ def pick_model_file(repo: str, size: str) -> Optional[str]:
     return files[0]
 
 
-def model_file(family: str, size: str) -> Path:
+def _quant_display(q: str) -> str:
+    """Human label for a quant slug; empty keeps the legacy name."""
+    return QUANT_LABELS.get(q, q or "")
+
+
+def model_file(family: str, size: str, quant: str = "") -> Path:
+    quant = effective_quant(family, quant)
+    if quant:
+        return root_dir() / "models" / f"{family}-{size}-{quant}.gguf"
     return root_dir() / "models" / f"{family}-{size}.gguf"
 
 
-def install_model(family: str, size: str, progress: Optional[Progress] = None,
+def install_model(family: str, size: str, quant: str = "",
+                  progress: Optional[Progress] = None,
                   log: Optional[Log] = None) -> Path:
     repo = model_repo(family, size)
-    name = pick_model_file(repo, size) or f"{family}-{size}-q1_0.gguf"
-    dest = model_file(family, size)
+    name = pick_model_file(repo, size, quant) or f"{family}-{size}-q1_0.gguf"
+    dest = model_file(family, size, quant)
     if dest.is_file() and dest.stat().st_size > 1_000_000:
         (log or (lambda _m: None))([f"Already present {dest.name} ✓"])
         return dest
@@ -381,13 +433,17 @@ class Server:
             return False
         family = self.config.get("family", "ternary")
         size = self.config.get("size", "8B")
+        quant = self.config.get("quant", "") or ""
         if family not in FAMILIES:
             (log or (lambda _m: None))([f"Invalid family '{family}' (choose one of: {', '.join(FAMILIES)})"])
             return False
         if size not in SIZES:
             (log or (lambda _m: None))([f"Invalid size '{size}' (choose one of: {', '.join(SIZES)})"])
             return False
-        model = model_file(family, size)
+        if quant and quant not in QUANTS.get(family, []):
+            (log or (lambda _m: None))([f"Invalid quant '{quant}' for family '{family}' (use: {', '.join(QUANTS[family])})"])
+            return False
+        model = model_file(family, size, quant)
         if not model.is_file():
             (log or (lambda _m: None))([f"Model missing {model.name}: run 'download'"])
             return False
@@ -474,12 +530,16 @@ class Server:
 
     def status_payload(self) -> dict:
         cfg = self.config
-        model = model_file(cfg.get("family", "ternary"), cfg.get("size", "8B"))
+        family = cfg.get("family", "ternary")
+        size = cfg.get("size", "8B")
+        quant = effective_quant(family, cfg.get("quant", "") or "", default=True)
+        model = model_file(family, size, quant)
         return {
             "running": self.running,
             "pid": self.pid(),
             "gpu": detect_gpu(),
-            "family": cfg.get("family"), "size": cfg.get("size"),
+            "family": family, "size": size, "quant": quant,
+            "quant_label": _quant_display(quant),
             "endpoint": self.endpoint(),
             "health": self.healthy(),
             "binary": llama_server_bin().is_file(),

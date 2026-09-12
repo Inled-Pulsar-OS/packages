@@ -1,7 +1,7 @@
 {
   "id": "sayri-prismml",
   "name": "Prism ML Server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "jaimegh-es",
   "description": "Local Prism ML model server (mirrors PrismML-Eng/Bonsai-demo). Auto-detects your GPU (CUDA / ROCm / Vulkan / CPU), downloads the llama.cpp binaries and the Bonsai / Ternary-Bonsai GGUF models (1.7B / 4B / 8B / 27B), and runs llama-server on localhost with a /health endpoint. Includes a welcome-style wizard in the terminal (sayri-prismml wizard) and a browser panel (sayri-prismml serve).",
   "entrypoint": "gateway.py",
@@ -13,6 +13,118 @@
   "ui": {
     "sync_instructions": "Open a terminal and run:\n\n  sayri-prismml wizard      # interactive wizard (install and start)\n  sayri-prismml status      # server status\n",
     "chat_url": "http://127.0.0.1:8080",
+    "settings_file": "prismml.json",
+    "settings": [
+      {
+        "t": "note",
+        "text": "Local Prism ML model server. Changes apply the next time the server starts.",
+        "level": "info"
+      },
+      {
+        "t": "select",
+        "id": "family",
+        "label": "Model family",
+        "key": "family",
+        "default": "ternary",
+        "options": [
+          {
+            "value": "ternary",
+            "label": "Ternary-Bonsai",
+            "desc": "quantized ternary mode (recommended, PQ2_0)"
+          },
+          {
+            "value": "bonsai",
+            "label": "Bonsai",
+            "desc": "classic GGUF quantization (Q1_0)"
+          }
+        ]
+      },
+      {
+        "t": "select",
+        "id": "size",
+        "label": "Model size",
+        "key": "size",
+        "default": "8B",
+        "options": [
+          {
+            "value": "27B",
+            "label": "27B",
+            "desc": "maximum quality, needs a lot of RAM"
+          },
+          {
+            "value": "8B",
+            "label": "8B",
+            "desc": "balanced (recommended)"
+          },
+          {
+            "value": "4B",
+            "label": "4B",
+            "desc": "fast and light"
+          },
+          {
+            "value": "1.7B",
+            "label": "1.7B",
+            "desc": "minimal, runs even on CPU"
+          }
+        ]
+      },
+      {
+        "t": "select",
+        "id": "quant",
+        "label": "Quantization",
+        "key": "quant",
+        "default": "pq2_0",
+        "explain": "PQ2_0 is the lightest and recommended for Ternary-Bonsai. F16 gives the best quality but is several times larger. Bonsai is 1-bit (Q1_0 only). Empty = auto per family.",
+        "options": [
+          { "value": "", "label": "Auto", "desc": "PQ2_0 for ternary, Q1_0 for bonsai" },
+          { "value": "pq2_0", "label": "PQ2_0", "desc": "lightest ternary (recommended)" },
+          { "value": "q2_0_g64", "label": "Q2_0_g64", "desc": "grouped quant, good balance" },
+          { "value": "q2_0", "label": "Q2_0", "desc": "classic 2-bit ternary" },
+          { "value": "f16", "label": "F16", "desc": "best quality, largest" },
+          { "value": "q1_0", "label": "Q1_0", "desc": "1-bit Bonsai (only option)" }
+        ]
+      },
+      {
+        "t": "entry",
+        "id": "host",
+        "label": "Bind host",
+        "key": "host",
+        "default": "127.0.0.1",
+        "hint": "Loopback only by default. Bind elsewhere at your own risk."
+      },
+      {
+        "t": "entry",
+        "id": "port",
+        "label": "Port",
+        "key": "port",
+        "default": "8080",
+        "hint": "Endpoint /health at http://<host>:<port>"
+      },
+      {
+        "t": "entry",
+        "id": "ctx_size",
+        "label": "Context size (tokens)",
+        "key": "ctx_size",
+        "default": "4096",
+        "hint": "Passed to llama-server as --ctx-size"
+      },
+      {
+        "t": "entry",
+        "id": "params_file",
+        "label": "Params file (optional)",
+        "key": "params_file",
+        "placeholder": "/path/to/params.json",
+        "hint": "Custom sampler parameters (--paramsfile). Leave empty for defaults."
+      },
+      {
+        "t": "entry",
+        "id": "gpu_override",
+        "label": "GPU override (optional)",
+        "key": "gpu_override",
+        "placeholder": "cpu|cuda|rocm|vulkan",
+        "hint": "Force a device when auto-detection is wrong."
+      }
+    ],
     "actions": [
       {
         "id": "prism_status",
