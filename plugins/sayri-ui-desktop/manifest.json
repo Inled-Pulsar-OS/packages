@@ -1,0 +1,23 @@
+{
+  "id": "sayri-desktop",
+  "name": "Sayri Desktop UI",
+  "version": "1.0.0",
+  "author": "jaimegh-es",
+  "description": "The Sayri desktop UI: the GTK4/WebKit assistant window, tray icon, overlay and full conversation interface. Running `sayri ui default` launches this plugin.",
+  "entrypoint": "gateway.py",
+  "sandbox_level": "LEVEL_3_HOST_USER",
+  "required_secrets": [],
+  "authorization": {
+    "mode": "none"
+  },
+  "ui": {
+    "id": "sayri-desktop",
+    "name": "Sayri Desktop UI",
+    "sync_instructions": "Sayri's main desktop UI. Launch it anytime with `sayri ui default` (or `sayri ui desktop`). It connects to the Sayri daemon over IPC and shows the assistant overlay and tray.",
+    "actions": []
+  },
+  "capabilities": [
+    "desktop_ui",
+    "run_local_process"
+  ]
+}

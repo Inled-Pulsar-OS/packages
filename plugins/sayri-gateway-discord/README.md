@@ -1,18 +1,19 @@
 # Sayri Gateway Plugin: Discord Bot
 
-This plugin connects any **Discord** server or direct message (DM) channel to your AI agents in **Sayri (Pulsar OS)**.
+This plugin connects any **Discord** server or direct message (DM) channel to your AI agents in **Sayri**, the personal AI assistant.
 
 ---
 
 ## Key Features
 
+- **Sayri xui UI** (new in v1.2.0): terminal wizard (`sayri-discord wizard`) and local browser panel (`sayri-discord serve`) to configure the token, toggle guests, view and rotate pairing PIN — all decoupled from the daemon.
 - **Flexible Invocation**:
   - In server channels: `/sayri <message>`, `!sayri <message>`, or mention the bot `@SayriBot <message>`.
   - In DMs: Just type your question and the bot will respond.
 - **Smart Channel Reading & Summarization**:
   - Ask Sayri to *"resume the last messages"*, *"what was said above"*, or *"summarize this channel"* -- the gateway fetches recent messages via Discord's REST API and provides full context to the agent.
 - **Secure Desktop Pairing (OTP)**:
-  - Protection against unauthorized access with a 6-digit PIN generated on your Pulsar OS desktop.
+  - Protection against unauthorized access with a 6-digit PIN generated on your desktop.
   - Brute-force protection with attempt limits and automatic PIN rotation.
 - **Multi-Instance & Sandboxing**:
   - Create multiple bot instances connected to different agents (e.g. *Main Sayri*, *Developer Assistant*) with different isolation levels (`LEVEL_0_NO_EXEC` to `LEVEL_3_HOST_USER`).
@@ -51,7 +52,7 @@ This plugin connects any **Discord** server or direct message (DM) channel to yo
 
 ---
 
-## Configuration in Sayri (Pulsar OS)
+## Configuration in **Sayri**, the personal AI assistant
 
 1. Open Sayri and click the **Settings** button.
 2. Go to the **Gateways** tab and click **`+ Add Gateway`**.

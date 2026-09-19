@@ -613,6 +613,12 @@ class DiscordGatewayDaemon:
                                 err_msg = ev.get("error", "Unknown error")
                                 current_text = f"⚠️ Error: {err_msg}"
                                 _trigger_update(force=True)
+                            elif "text" in ev:
+                                current_text = str(ev.get("text", ""))
+                                _trigger_update(force=True)
+                            elif "response" in ev:
+                                current_text = str(ev.get("response", ""))
+                                _trigger_update(force=True)
                         except Exception as json_err:
                             print(f"[Discord Gateway] Event error: {json_err}", file=sys.stderr)
                     else:
@@ -620,8 +626,12 @@ class DiscordGatewayDaemon:
                         _trigger_update(force=False)
 
             client.close()
-            _trigger_update(force=True)
-            return (status_prefix + current_text).strip()
+            final_resp = (status_prefix + current_text).strip()
+            if not final_resp:
+                final_resp = f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
+            if on_update:
+                on_update(final_resp, True)
+            return final_resp
 
         except Exception as e:
             print(f"[Discord Gateway] Socket error: {e}", file=sys.stderr)
@@ -659,7 +669,7 @@ class DiscordGatewayDaemon:
             if ok:
                 msg = f"🎉 **{auth_reply}**\nWelcome <@{user_id}>! You are now authorized as owner of Sayri.\n\nHow can I help you today?"
             else:
-                msg = f"❌ **{auth_reply}**\nOpen Sayri on your Pulsar OS desktop, go to 'Gateways' -> 'Show Pairing PIN' and use `/pair <PIN>`."
+                msg = f"❌ **{auth_reply}**\nOpen Sayri on your desktop, go to 'Gateways' -> 'Show Pairing PIN' and use `/pair <PIN>`."
             self.rest.edit_interaction_response(app_id, inter_token, msg)
             return
 
@@ -825,7 +835,7 @@ class DiscordGatewayDaemon:
                 else:
                     self.rest.send_message(
                         channel_id,
-                        f"❌ **{auth_reply}**\nOpen Sayri on your Pulsar OS desktop, go to 'Gateways' -> 'Show Pairing PIN' and type `/pair <PIN>`.",
+                        f"❌ **{auth_reply}**\nOpen Sayri on your desktop, go to 'Gateways' -> 'Show Pairing PIN' and type `/pair <PIN>`.",
                         reply_to_message_id=msg_id,
                     )
             else:

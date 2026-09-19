@@ -1,11 +1,11 @@
 {
   "id": "sayri-gateway-telegram",
   "name": "Telegram Bot Gateway",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "author": "jaimegh-es",
-  "description": "Autonomous Telegram Bot Gateway bridging external chat messages to Sayri with Desktop OTP pairing and whitelist authorization.",
+  "description": "Autonomous Telegram Bot Gateway bridging external chat messages to Sayri with Desktop OTP pairing and whitelist authorization. Comes with the new Sayri xui UI (terminal wizard `sayri-telegram wizard` and browser panel `sayri-telegram serve`), decoupled from the daemon.",
   "entrypoint": "gateway.py",
-  "sandbox_level": "LEVEL_1_READONLY",
+  "sandbox_level": "LEVEL_3_HOST_USER",
   "required_secrets": [
     "TELEGRAM_BOT_TOKEN"
   ],
@@ -20,9 +20,15 @@
     }
   },
   "ui": {
-    "sync_instructions": "1. Open Telegram and search for your bot.\n2. Send /start to request access.\n3. Enter the 6-digit PIN shown on this desktop screen or click 'Show Pairing PIN'.",
-    "chat_url": "https://t.me/sayri_pulsaros_bot",
+    "sync_instructions": "Set up and control the bot with the new Sayri UI:\n\n  sayri-telegram wizard         # wizard in the terminal (xui)\n  sayri-telegram serve          # web panel at http://127.0.0.1:8756\n  sayri-telegram status         # daemon, token and PIN status\n  sayri-telegram token <TOKEN>  # saves the token in ~/.config/sayri/secrets.json\n  sayri-telegram pin --rotate   # rotates the pairing PIN\n\n1. Open @BotFather in Telegram and create your bot (/newbot).\n2. Copy the token (format 123456:ABC-DEF...) and save it with `sayri-telegram token <TOKEN>`.\n3. Send /start to your bot and /pair <PIN> to pair it.",
+    "chat_url": "http://127.0.0.1:8756",
     "actions": [
+      {
+        "id": "panel",
+        "label": "Open Telegram console",
+        "type": "open_url",
+        "url": "http://127.0.0.1:8756"
+      },
       {
         "id": "set_token",
         "label": "Configure Bot Token",
@@ -31,15 +37,23 @@
       },
       {
         "id": "view_pin",
-        "label": "Show Pairing PIN",
+        "label": "Show pairing PIN",
         "type": "display_pin"
+      },
+      {
+        "id": "telegram_status",
+        "label": "Daemon status",
+        "type": "sync_exec",
+        "command": "sayri-telegram status"
       }
     ]
   },
   "capabilities": [
     "receive_messages",
     "send_replies",
-    "voice_audio_stream"
+    "voice_audio_stream",
+    "run_local_process",
+    "http_server"
   ],
   "allowed_domains": [
     "api.telegram.org"

@@ -1,0 +1,23 @@
+{
+  "id": "sayri-orb",
+  "name": "Sayri Orb UI",
+  "version": "0.1.0",
+  "author": "jaimegh-es",
+  "description": "GTK4 transparent orb widget — the default visual interface for Sayri. Connects to the daemon over IPC and renders state, mic level, transcription, and speaking feedback.",
+  "entrypoint": "gateway.py",
+  "sandbox_level": "LEVEL_0_NO_EXEC",
+  "required_secrets": [],
+  "authorization": {
+    "mode": "none"
+  },
+  "ui": {
+    "sync_instructions": "The orb starts automatically with the Sayri daemon. Click it to toggle the microphone.",
+    "actions": []
+  },
+  "capabilities": [
+    "render_orb",
+    "render_overlay",
+    "listen_events",
+    "send_commands"
+  ]
+}

@@ -65,6 +65,7 @@ BINARY_SHA256: dict[str, str] = {
     "ubuntu-vulkan-arm64": "faef2c408c9506bdd74895ac5531a06b71e8f51f926905a9f2cad0be261511ac",
     "ubuntu-rocm-7.2-x64": "019741d3b585a6aca360ff3da8a001c56fa0696c39ab8ca4affa3dc4cb5212da",
     "linux-cuda-12.4-x64": "fd437bf65ce449c77a40edee99c61365f7d548120a6c63657744d4971c9b80b6",
+    "linux-cuda-12.8-x64": "1af989aaf959db957a641d74f87d5af4f0c0d96ab397d6ebbcc2d1c04e71e0a1",
     "win-cpu-x64": "3d68c36d5743c06e7334a2c2da2cebf2b4c4c230f706db69ef095a7a1419a8e0",
     "win-cpu-arm64": "191ecca1b1eea0702038f56b88a6e563d7d74051456c175415da6cffc209598c",
     "win-cuda-12.4-x64": "07a4c945779bda6b0e12e51ad97c55858e126ea903bfdb3053a16cd29d2f2257",
@@ -105,6 +106,8 @@ DEFAULTS: dict[str, Any] = {
     "ctx_size": 4096,
     "params_file": "",
     "gpu_override": "",
+    "ngl": 99,
+    "vulkan_device": "",
     "enabled": True,
 }
 
@@ -345,18 +348,49 @@ def _cuda_runtime_available() -> bool:
     return all(hay.find(f"lib{s}.so.12") >= 0 for s in ("cudart", "cublas"))
 
 
+def _vulkan_available() -> bool:
+    """True when a Vulkan loader + at least one ICD are present."""
+    for icd_dir in ("/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d"):
+        if Path(icd_dir).is_dir():
+            if any(p.suffix == ".json" for p in Path(icd_dir).iterdir()):
+                return True
+    if shutil.which("vulkaninfo"):
+        return True
+    try:
+        import ctypes
+        ctypes.CDLL("libvulkan.so.1")
+        return True
+    except OSError:
+        return False
+
+
+def _config_gpu_override() -> str:
+    """GPU override read from the plugin config file (gpu_override key)."""
+    try:
+        if config_file().is_file():
+            data = json.loads(config_file().read_text(encoding="utf-8"))
+            v = str(data.get("gpu_override") or "").strip().lower()
+            if v in ("auto", "cpu", "cuda", "rocm", "vulkan"):
+                return "" if v == "auto" else v
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def detect_gpu() -> str:
-    override = os.environ.get("PRISM_GPU", "").strip().lower()
+    override = os.environ.get("PRISM_GPU", "").strip().lower() or _config_gpu_override()
     if override:
         return override if override in ("cuda", "rocm", "vulkan", "cpu") else "cpu"
     for probe in ("nvcc", "nvidia-smi"):
         if shutil.which(probe):
             # a driver without the runtime libs cannot load the CUDA build
-            return "cuda" if _cuda_runtime_available() else "cpu"
+            if _cuda_runtime_available():
+                return "cuda"
+            break
+    if _vulkan_available():
+        return "vulkan"
     if shutil.which("rocminfo"):
         return "rocm"
-    if shutil.which("vulkaninfo"):
-        return "vulkan"
     return "cpu"
 
 
@@ -376,7 +410,7 @@ def release_asset() -> tuple[str, str]:
         if arch == "arm64":
             return ("ubuntu-vulkan-arm64" if gpu == "vulkan" else "ubuntu-arm64"), "tar.gz"
         if gpu == "cuda":
-            return "linux-cuda-12.4-x64", "tar.gz"
+            return "linux-cuda-12.8-x64", "tar.gz"
         if gpu == "rocm":
             return "ubuntu-rocm-7.2-x64", "tar.gz"
         if gpu == "vulkan":
@@ -451,13 +485,25 @@ def _flatten_bin_dir(bin_dir_: Path) -> None:
                     pass
 
 
+def _asset_marker() -> Path:
+    return bin_dir() / ".asset"
+
+
 def install_binary(progress: Optional[Progress] = None, log: Optional[Log] = None) -> Path:
     dest = llama_server_bin()
     is_win = platform.system().lower() == "windows"
-    if dest.is_file() and (is_win or os.access(dest, os.X_OK)):
+    asset, ext = release_asset()
+    marker = _asset_marker()
+    current = marker.read_text().strip() if marker.is_file() else ""
+    if dest.is_file() and (is_win or os.access(dest, os.X_OK)) and current == asset:
         (log or (lambda _m: None))([f"Binary already installed ✓"])
         return dest
-    asset, ext = release_asset()
+    # the installed backend does not match the active GPU backend: replace it
+    if dest.exists():
+        try:
+            dest.unlink()
+        except OSError:
+            pass
     url = _release_asset_url(asset, ext)
     archive = bin_dir() / f"{asset}.{ext}"
     want = BINARY_SHA256.get(asset)
@@ -484,6 +530,10 @@ def install_binary(progress: Optional[Progress] = None, log: Optional[Log] = Non
         raise RuntimeError("llama-server binary not found in archive")
     if not is_win:
         dest.chmod(0o755)
+    try:
+        marker.write_text(asset)
+    except OSError:
+        pass
     (log or (lambda _m: None))([f"llama-server installed ✓"])
     return dest
 
@@ -515,7 +565,7 @@ class Server:
         if self.running:
             (log or (lambda _m: None))([f"Already running (PID {self.pid()}) ✓"])
             return True
-        binary = llama_server_bin()
+        binary = install_binary(log=log)
         if not (binary.is_file() and (platform.system().lower() == "windows" or os.access(binary, os.X_OK))):
             (log or (lambda _m: None))([f"Binary missing: run 'install' first"])
             return False
@@ -557,12 +607,24 @@ class Server:
             (log or (lambda _m: None))([f"Params file not found: {params_file}"])
             return False
         gpu = detect_gpu()
+        if gpu == "cuda" and not _cuda_runtime_available():
+            (log or (lambda _m: None))(
+                ["⚠ CUDA runtime libs (libcudart.so.12 / libcublas.so.12) missing — this build may fail to start. Use GPU=auto/vulkan or install the CUDA runtime."]
+            )
+        try:
+            ngl = int(self.config.get("ngl", 99))
+        except (TypeError, ValueError):
+            ngl = 0 if gpu == "cpu" else 99
+        env = dict(os.environ)
+        vdev = str(self.config.get("vulkan_device", "") or "").strip()
+        if gpu == "vulkan" and vdev:
+            env["GGML_VK_VISIBLE_DEVICES"] = vdev
         args = [
             str(binary), "-m", str(model),
             "--host", host,
             "--port", str(port),
             "--ctx-size", str(max(128, ctx)),
-            "-ngl", "99" if gpu != "cpu" else "0",
+            "-ngl", str(max(0, ngl)),
         ]
         if params_file:
             args += ["--paramsfile", params_file]
@@ -574,6 +636,7 @@ class Server:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
         self._pid_file().write_text(str(proc.pid))
         deadline = time.time() + wait
@@ -635,6 +698,7 @@ class Server:
             "model": model.is_file(),
             "model_path": str(model),
             "port": cfg.get("port"),
+            "ngl": cfg.get("ngl"),
             "enabled": cfg.as_bool("enabled", True),
         }
 

@@ -31,6 +31,22 @@ SOCKET_PATHS = [
 ]
 
 
+def get_bot_token() -> str:
+    """Resolve the bot token: env first, then ~/.config/sayri/secrets.json (key TELEGRAM_BOT_TOKEN)."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if token:
+        return token
+    secrets_file = Path.home() / ".config" / "sayri" / "secrets.json"
+    try:
+        data = json.loads(secrets_file.read_text(encoding="utf-8"))
+        item = data.get("secrets", {}).get("TELEGRAM_BOT_TOKEN", {})
+        if isinstance(item, dict):
+            return str(item.get("value", ""))
+        return str(item)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def acquire_single_instance_lock() -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     if PID_FILE.is_file():
@@ -298,9 +314,9 @@ class SayriTelegramGateway:
     """Main Gateway loop with Continuous Sessions, Standby Inactivity Timeout, and History Recall."""
 
     def __init__(self):
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        token = get_bot_token()
         if not token:
-            print("❌ Error: TELEGRAM_BOT_TOKEN environment variable is not set.", file=sys.stderr)
+            print("❌ Error: bot token no configurado. Usa la variable TELEGRAM_BOT_TOKEN o `sayri-telegram token <TOKEN>`.", file=sys.stderr)
             sys.exit(1)
 
         acquire_single_instance_lock()
@@ -471,6 +487,12 @@ class SayriTelegramGateway:
                                 err_msg = ev.get("error", "Unknown error")
                                 current_text = f"⚠️ Error: {err_msg}"
                                 _update_ui(force=True)
+                            elif "text" in ev:
+                                current_text = str(ev.get("text", ""))
+                                _update_ui(force=True)
+                            elif "response" in ev:
+                                current_text = str(ev.get("response", ""))
+                                _update_ui(force=True)
                         except Exception as json_err:
                             print(f"[Telegram] Event error: {json_err}", file=sys.stderr)
                     else:
@@ -478,6 +500,9 @@ class SayriTelegramGateway:
                         _update_ui(force=False)
 
             client.close()
+            final_resp = (status_prefix + current_text).strip()
+            if not final_resp:
+                final_resp = f"👋 Hello {user_name}! Sayri received your message: '{prompt}'."
             _update_ui(force=True)
 
         except Exception as e:

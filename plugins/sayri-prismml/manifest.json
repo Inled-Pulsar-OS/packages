@@ -1,7 +1,7 @@
 {
   "id": "sayri-prismml",
   "name": "Prism ML Server",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": "jaimegh-es",
   "description": "Local Prism ML model server (mirrors PrismML-Eng/Bonsai-demo). Auto-detects your GPU (CUDA / ROCm / Vulkan / CPU), downloads the llama.cpp binaries and the Bonsai / Ternary-Bonsai GGUF models (1.7B / 4B / 8B / 27B), and runs llama-server on localhost with a /health endpoint. Includes a welcome-style wizard in the terminal (sayri-prismml wizard) and a browser panel (sayri-prismml serve).",
   "entrypoint": "gateway.py",
@@ -125,12 +125,35 @@
         "hint": "Custom sampler parameters (--paramsfile). Leave empty for defaults."
       },
       {
-        "t": "entry",
+        "t": "select",
         "id": "gpu_override",
-        "label": "GPU override (optional)",
+        "label": "GPU acceleration",
         "key": "gpu_override",
-        "placeholder": "cpu|cuda|rocm|vulkan",
-        "hint": "Force a device when auto-detection is wrong."
+        "default": "auto",
+        "explain": "CUDA needs the NVIDIA CUDA runtime (libcudart.so.12 / libcublas.so.12) installed. Vulkan works with just the NVIDIA/AMD driver. Auto picks the best available backend.",
+        "options": [
+          { "value": "auto", "label": "Auto", "desc": "detect best backend (CUDA → Vulkan → ROCm → CPU)" },
+          { "value": "cuda", "label": "CUDA", "desc": "NVIDIA GPU, needs CUDA 12.x runtime" },
+          { "value": "vulkan", "label": "Vulkan", "desc": "NVIDIA/AMD/Intel, driver-only" },
+          { "value": "rocm", "label": "ROCm", "desc": "AMD GPU, needs ROCm" },
+          { "value": "cpu", "label": "CPU", "desc": "no GPU offload" }
+        ]
+      },
+      {
+        "t": "entry",
+        "id": "ngl",
+        "label": "GPU layers (-ngl)",
+        "key": "ngl",
+        "default": "99",
+        "hint": "Layers offloaded to the GPU. 99 = all; 0 = CPU only. Passed to llama-server as -ngl."
+      },
+      {
+        "t": "entry",
+        "id": "vulkan_device",
+        "label": "Vulkan device index (optional)",
+        "key": "vulkan_device",
+        "placeholder": "e.g. 0",
+        "hint": "GGML_VK_VISIBLE_DEVICES. Leave empty to use device 0 (usually the discrete GPU). Use `llama-server --list-devices` to enumerate."
       }
     ],
     "actions": [
