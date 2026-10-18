@@ -7,6 +7,7 @@
     python3 panel.py token <TOKEN>       # saves the token in secrets.json
     python3 panel.py pin [--rotate]      # shows / rotates the PIN
     python3 panel.py guests <on|off>     # enables / disables guests
+    python3 panel.py memory [on|off]     # memory journal status / toggle
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from typing import Optional
 
 try:
     from ui import (  # type: ignore  # same plugin dir
-        delete_secret, get_pin, get_secret, rotate_pin, run_tui_guard, serve_http,
-        set_guests, set_secret, status_payload,
+        delete_secret, get_memory, get_pin, get_secret, memory_stats, rotate_pin,
+        run_tui_guard, serve_http, set_guests, set_memory, set_secret,
+        status_payload,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write(f"[discord] plugin dependencies missing (run from the plugin dir): {exc}\n")
@@ -30,6 +32,7 @@ def cmd_status(_args) -> int:
     print(f"token:       {'configured ✓' if st['token'] else 'pending ✗'}")
     print(f"daemon:      {'running (PID %s)' % st['pid'] if st['running'] else 'stopped'}")
     print(f"guests:      {'allowed' if st['guests'] else 'denied'}")
+    print(f"memory:      {'on' if st['memory'] else 'off'} ({st['memory_files']} file(s) in {st['memory_dir']})")
     print(f"PIN:         {st['pin_value'] or 'not generated'}")
     print(f"config dir:  {st['config_dir']}")
     return 0
@@ -71,6 +74,17 @@ def cmd_guests(args) -> int:
     return 0
 
 
+def cmd_memory(args) -> int:
+    if args.state:
+        set_memory(args.state == "on")
+    st = memory_stats()
+    state = "on" if get_memory() else "off"
+    print(f"  memory journal: {state}")
+    print(f"  directory:      {st['directory']}")
+    print(f"  journals:       {st['files']} file(s), {st['bytes']} bytes")
+    return 0
+
+
 def cmd_info(_args) -> int:
     print(f"instance:    {__import__('gateway', fromlist=['INSTANCE_ID']).INSTANCE_ID}")
     print(f"current token: {'yes' if get_secret() else 'not configured'}")
@@ -96,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("--rotate", action="store_true")
     gs = sub.add_parser("guests", help="enable or disable channel guests")
     gs.add_argument("state", choices=["on", "off"])
+    mm = sub.add_parser("memory", help="memory journal status / toggle")
+    mm.add_argument("state", nargs="?", choices=["on", "off"])
     sub.add_parser("info", help="paths and status")
     return parser
 
@@ -113,6 +129,7 @@ def main(argv: Optional[list] = None) -> int:
         "rotate": cmd_rotate,
         "pin": cmd_pin,
         "guests": cmd_guests,
+        "memory": cmd_memory,
         "info": cmd_info,
     }
     return table[args.cmd](args)

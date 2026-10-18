@@ -138,6 +138,38 @@ def set_guests(enabled: bool) -> None:
         pass
 
 
+def get_memory() -> bool:
+    try:
+        data = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        return bool(data.get("memory_capture", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def set_memory(enabled: bool) -> None:
+    try:
+        data = json.loads(AUTH_FILE.read_text(encoding="utf-8")) if AUTH_FILE.is_file() else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    data["memory_capture"] = bool(enabled)
+    data["updated_at"] = time.time()
+    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUTH_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(AUTH_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def memory_stats() -> dict:
+    try:
+        import memory  # type: ignore  # vendored inside the plugin dir
+        store = memory.MemoryStore(DEFAULT_CONFIG_DIR / "discord_memory", INSTANCE_ID)
+        return store.stats()
+    except Exception:  # noqa: BLE001
+        return {"directory": str(DEFAULT_CONFIG_DIR / "discord_memory"), "files": 0, "bytes": 0, "last_write": 0.0}
+
+
 def status_payload() -> dict:
     pid = get_pid()
     return {
@@ -147,6 +179,9 @@ def status_payload() -> dict:
         "pin": bool(get_pin()),
         "pin_value": get_pin(),
         "guests": get_guests(),
+        "memory": get_memory(),
+        "memory_dir": memory_stats()["directory"],
+        "memory_files": memory_stats()["files"],
         "config_dir": str(DEFAULT_CONFIG_DIR),
     }
 
@@ -158,7 +193,7 @@ class DiscordWizard:
     def __init__(self) -> None:
         self.idx = 0
         self.task = TaskRunner()
-        self.val: dict = {"token": get_secret(), "guests": get_guests()}
+        self.val: dict = {"token": get_secret(), "guests": get_guests(), "memory": get_memory()}
         self._flow_done = False
 
     def render(self) -> Optional[dict]:
@@ -174,6 +209,7 @@ class DiscordWizard:
             f"bot token: {'configured ✓' if st['token'] else 'pending ✗'}",
             f"daemon: {'running (PID %s)' % st['pid'] if st['running'] else 'stopped'}",
             f"channel guests: {'allowed' if st['guests'] else 'denied'}",
+            f"memory journal: {'on · %s file(s)' % st['memory_files'] if st['memory'] else 'off'}",
             f"pairing PIN: {'available' if st['pin'] else 'not generated'}",
         ]
         footer = [
@@ -200,6 +236,8 @@ class DiscordWizard:
                       secret=True, hint="Paste the token and save."),
                 check("guests", "Allow guests in authorized channels",
                       default=bool(self.val.get("guests", False))),
+                check("memory", "Journal tasks / proposals / questions to Markdown",
+                      default=bool(self.val.get("memory", True))),
             ],
             footer=[button("back", "Back"), button("save", "Save", kind="primary")],
             id="configure", step="Step 1/2",
@@ -257,6 +295,9 @@ class DiscordWizard:
         if "guests" in value and bool(value["guests"]) != get_guests():
             set_guests(bool(value["guests"]))
             self.val["guests"] = bool(value["guests"])
+        if "memory" in value and bool(value["memory"]) != get_memory():
+            set_memory(bool(value["memory"]))
+            self.val["memory"] = bool(value["memory"])
         self.idx = 0
         return self._home_screen()
 

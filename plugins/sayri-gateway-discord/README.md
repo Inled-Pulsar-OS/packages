@@ -7,6 +7,7 @@ This plugin connects any **Discord** server or direct message (DM) channel to yo
 ## Key Features
 
 - **Sayri xui UI** (new in v1.2.0): terminal wizard (`sayri-discord wizard`) and local browser panel (`sayri-discord serve`) to configure the token, toggle guests, view and rotate pairing PIN — all decoupled from the daemon.
+- **Conversation memory journal** (new in v1.3.0): tasks, proposals and questions sent by authorized members are appended to per-channel Markdown files, so the server conversation survives restarts and can be reviewed later. See [Conversation memory journal](#conversation-memory-journal).
 - **Flexible Invocation**:
   - In server channels: `/sayri <message>`, `!sayri <message>`, or mention the bot `@SayriBot <message>`.
   - In DMs: Just type your question and the bot will respond.
@@ -89,3 +90,37 @@ For security, Sayri rejects messages from unknown users until they pair with the
 | `@SayriBot <question>` | Direct mention to the bot in any channel. |
 | `/sayri resume the last messages` | Read recent channel messages and generate a structured summary. |
 | `/sayri /pair <PIN>` | Pair and authorize your Discord account with Sayri. |
+| `/memory [status\|on\|off\|show]` | Owner only: memory journal status, enable/disable, or show the last entries of this channel. |
+| `!memory [status\|on\|off\|show]` | Text-command fallback for `/memory`. |
+
+---
+
+## Conversation memory journal
+
+While Sayri only *answers* when addressed, the journal is **passive**: it records
+what authorized members write — including messages that do not mention the bot —
+so a channel's decisions and open questions are never lost.
+
+- **What is captured**: messages classified as *task*, *proposal* or *question*
+  (keyword heuristics, no model call, no blocking).
+- **Who is captured**: the paired owner and, when guest access is enabled,
+  server members allowed to interact (`/guests on`). Strangers are never
+  journaled.
+- **Where**: `~/.config/sayri/discord_memory/<instance>/channel_<channel_id>.md`
+  (directory `0700`, files `0600`). The channel id is reduced to digits before
+  becoming a filename, so a crafted identifier cannot escape the directory.
+- **What it never does**: reply on Discord, call Sayri Core, or modify anything
+  outside its directory — the gateway appends text and moves on.
+- **Control**:
+
+  ```text
+  /memory            → status, directory, number of journals
+  /memory show       → last 5 entries of this channel
+  /memory off        → stop capturing (owner only)
+  /memory on         → resume capturing
+  sayri-discord memory [on|off]   # same toggle from the CLI
+  ```
+
+The journal is **on by default**. Captured text is stripped of control
+characters and truncated; the file grows append-only, so rotate or delete the
+directory at any time without affecting the gateway.

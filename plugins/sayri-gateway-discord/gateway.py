@@ -32,6 +32,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+# The conversation memory journal ships next to this file, so make sure the
+# plugin directory is importable both when run as a script and when imported
+# by the plugin UI (ui.py / panel.py).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import memory  # noqa: E402  (same plugin directory, conversation memory journal)
+
 # Multi-instance dynamic configuration
 INSTANCE_ID = os.environ.get("SAYRI_GATEWAY_INSTANCE_ID", "sayri-gateway-discord")
 TARGET_AGENT = os.environ.get("SAYRI_TARGET_AGENT", "default")
@@ -54,6 +60,8 @@ class AuthorizationManager:
         self.whitelisted_users: Set[str] = set()
         self.allow_channel_guests: bool = False
         self.authorized_channels: Set[str] = set()
+        self.memory_capture: bool = True
+        self.memory_channels: Set[str] = set()
         self._failed_attempts: Dict[str, Tuple[int, float]] = {}
         self._load()
 
@@ -65,6 +73,8 @@ class AuthorizationManager:
                 self.whitelisted_users = set(str(u).lower() for u in data.get("allowed_discord_users", []))
                 self.allow_channel_guests = bool(data.get("allow_channel_guests", False))
                 self.authorized_channels = set(str(c) for c in data.get("authorized_channels", []))
+                self.memory_capture = bool(data.get("memory_capture", True))
+                self.memory_channels = set(str(c) for c in data.get("memory_channels", []))
             except Exception:
                 pass
 
@@ -77,6 +87,8 @@ class AuthorizationManager:
                 "allowed_discord_users": list(self.whitelisted_users),
                 "allow_channel_guests": self.allow_channel_guests,
                 "authorized_channels": list(self.authorized_channels),
+                "memory_capture": self.memory_capture,
+                "memory_channels": list(self.memory_channels),
             }
             self.auth_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             try:
@@ -116,6 +128,16 @@ class AuthorizationManager:
         self.allow_channel_guests = enabled
         self._save()
         print(f"[Auth] 👥 Channel guests access set to: {enabled}")
+
+    def set_memory_capture(self, enabled: bool) -> None:
+        self._load()
+        self.memory_capture = enabled
+        self._save()
+        print(f"[Auth] 🧠 Memory journal capture set to: {enabled}")
+
+    def is_capture_channel(self, channel_id: str) -> bool:
+        """True when the channel is journaled (empty list means every channel)."""
+        return not self.memory_channels or str(channel_id) in self.memory_channels
 
     def verify_pairing_pin(self, pin: str, user_id: str, username: Optional[str] = None) -> Tuple[bool, str]:
         now = time.time()
@@ -281,6 +303,24 @@ class DiscordRestClient:
                 ],
             },
             {
+                "name": "memory",
+                "description": "Conversation memory journal: status, toggle or read (Owner only)",
+                "options": [
+                    {
+                        "type": 3,  # STRING
+                        "name": "action",
+                        "description": "status (default), on, off or show",
+                        "required": False,
+                        "choices": [
+                            {"name": "status", "value": "status"},
+                            {"name": "on", "value": "on"},
+                            {"name": "off", "value": "off"},
+                            {"name": "show", "value": "show"},
+                        ],
+                    }
+                ],
+            },
+            {
                 "name": "pair",
                 "description": "Pair and authorize your Discord account with Sayri using desktop PIN",
                 "options": [
@@ -307,7 +347,7 @@ class DiscordRestClient:
         ]
         res = self.request("PUT", f"/applications/{application_id}/commands", commands)
         if res is not None:
-            print(f"✨ [Discord Gateway] Registered native Slash Commands (/sayri, /new, /guests, /pair, /resume) for app {application_id}")
+            print(f"✨ [Discord Gateway] Registered native Slash Commands (/sayri, /new, /guests, /memory, /pair, /resume) for app {application_id}")
 
     def respond_interaction_defer(self, interaction_id: str, interaction_token: str) -> None:
         """Acknowledges interaction with Type 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE)."""
@@ -488,6 +528,9 @@ class DiscordGatewayDaemon:
         # Session versioning and activity tracking for continuous memory and /new
         self.channel_sessions: Dict[str, int] = {}
         self.channel_last_activity: Dict[str, float] = {}
+
+        # Passive conversation memory journal (tasks / proposals / questions)
+        self.memory = memory.MemoryStore(DEFAULT_CONFIG_DIR / "discord_memory", INSTANCE_ID)
 
     def get_channel_session_id(self, channel_id: str, author_id: str, is_dm: bool) -> str:
         """Builds a deterministic continuous session ID per channel or DM, advancing on standby timeout."""
@@ -694,6 +737,17 @@ class DiscordGatewayDaemon:
                 )
             return
 
+        # 3b. Command: /memory [action] (Owner only)
+        if cmd_name == "memory":
+            if not self.auth.is_owner(user_id, username):
+                self.rest.edit_interaction_response(
+                    app_id, inter_token, "🔒 **Only the paired owner** can configure the memory journal."
+                )
+                return
+            action = str(options.get("action") or "status").strip().lower()
+            self.rest.edit_interaction_response(app_id, inter_token, self._memory_message(action, channel_id))
+            return
+
         # 4. Command: /new (Reset conversation context)
         if cmd_name == "new":
             allowed, reason = self.auth.can_interact(user_id, username, channel_id, is_dm)
@@ -743,6 +797,7 @@ class DiscordGatewayDaemon:
         # 7. Command: /sayri <message>
         if cmd_name == "sayri":
             prompt = str(options.get("message") or options.get("mensaje") or "").strip()
+            self._capture_message(channel_id, user_id, username, prompt, is_dm)
             summary_triggers = ["resume", "resumen", "what did they say", "read the messages", "read channel", "latest messages", "summary"]
             if any(trig in prompt.lower() for trig in summary_triggers):
                 recent_msgs = self.rest.get_channel_messages(channel_id, limit=20)
@@ -767,6 +822,52 @@ class DiscordGatewayDaemon:
 
             self.query_sayri_core_stream(prompt, username, session_id=session_id, on_update=_on_sayri_update)
             return
+
+    def _capture_message(self, channel_id: str, user_id: str, username: str, text: str, is_dm: bool) -> None:
+        """Append an authorized member's message to the passive memory journal.
+
+        The journal is a local Markdown file: nothing is sent to Discord and
+        nothing is forwarded to Sayri Core, so capturing cannot trigger an
+        answer or a loop. Strangers and channels with guest access disabled are
+        never captured because ``can_interact`` decides, exactly like routing.
+        """
+        if not text:
+            return
+        # can_interact() reloads the authorization file, so a /memory or CLI
+        # toggle takes effect on the very next message.
+        allowed, _reason = self.auth.can_interact(user_id, username, channel_id, is_dm)
+        if not allowed:
+            return
+        if not self.auth.memory_capture or not self.auth.is_capture_channel(channel_id):
+            return
+        try:
+            kind = self.memory.capture(channel_id, username, text)
+        except Exception as exc:  # noqa: BLE001 - journaling must never kill the gateway
+            print(f"[Discord Gateway] Memory journal error: {exc}", file=sys.stderr)
+            return
+        if kind:
+            print(f"[Discord Gateway] 🧠 Journaled {kind} from @{username} in #{channel_id}")
+
+    def _memory_message(self, action: str, channel_id: str) -> str:
+        """Render the /memory response shared by the text and slash handlers."""
+        if action in ("on", "off"):
+            self.auth.set_memory_capture(action == "on")
+        stats = self.memory.stats()
+        state = "🟢 **Enabled**" if self.auth.memory_capture else "🔴 **Disabled**"
+        if action in ("show", "last", "tail"):
+            entries = self.memory.entries(channel_id, limit=5)
+            if not entries:
+                return "🧠 No entries journaled for this channel yet."
+            body = format_for_discord("\n\n".join(entries), 1500)[0]
+            return f"🧠 **Last journaled entries in this channel:**\n```markdown\n{body}\n```"
+        last = time.strftime("%Y-%m-%d %H:%M", time.localtime(stats["last_write"])) if stats["last_write"] else "never"
+        return (
+            f"🧠 **Memory journal**: {state}\n"
+            f"Directory: `{stats['directory']}`\n"
+            f"Journals: `{stats['files']}` file(s), `{stats['bytes']}` bytes, last write: {last}\n"
+            "Captures authorized members' tasks, proposals and questions. "
+            "Use `!memory on|off` to toggle and `!memory show` to read this channel."
+        )
 
     def handle_discord_message(self, message: Dict[str, Any], bot_user: Dict[str, Any]) -> None:
         """Text, mentions (@Sayri), and commands (!new, !pair) fallback handler."""
@@ -797,11 +898,14 @@ class DiscordGatewayDaemon:
         is_bot_mentioned = any(str(m.get("id")) == bot_id for m in mentions_list)
         has_mention_tag = (f"<@{bot_id}>" in content) or (f"<@!{bot_id}>" in content)
         has_role_mention = bool(mention_roles) or bool(re.search(r"<@&\d+>", content))
-        is_sayri_cmd = content.startswith(("/sayri", "!sayri", "/pair", "!pair", "/new", "!new", "/guests", "!guests"))
+        is_sayri_cmd = content.startswith(("/sayri", "!sayri", "/pair", "!pair", "/new", "!new", "/guests", "!guests", "/memory", "!memory"))
         names_sayri = bool(re.search(rf"\b@?{re.escape(bot_name)}\b", content, re.IGNORECASE)) or bool(re.search(r"\b@?sayri\b", content, re.IGNORECASE))
 
         is_addressed = is_dm or is_bot_mentioned or has_mention_tag or has_role_mention or is_reply_to_bot or is_sayri_cmd or names_sayri
         if not is_addressed:
+            # Passive memory journal: authorized members are captured even when
+            # Sayri is not addressed. Capture never sends a Discord reply.
+            self._capture_message(channel_id, user_id, username, content, is_dm)
             return
 
         # 2. Clean prompt text
@@ -876,11 +980,24 @@ class DiscordGatewayDaemon:
                 self.rest.send_message(channel_id, f"ℹ️ **Guest Status**: {current}\nUse `!guests on` or `!guests off` to change it.", reply_to_message_id=msg_id)
             return
 
+        # 5b. Memory Command (/memory o !memory)
+        if clean_text.startswith(("/memory", "!memory")):
+            if not self.auth.is_owner(user_id, username):
+                self.rest.send_message(channel_id, "🔒 **Only the paired owner** can configure the memory journal.", reply_to_message_id=msg_id)
+                return
+            parts = clean_text.split()
+            action = parts[1].lower() if len(parts) > 1 else "status"
+            self.rest.send_message(channel_id, self._memory_message(action, channel_id), reply_to_message_id=msg_id)
+            return
+
         # 6. Check interaction authorization with strict DM protection
         allowed, reason = self.auth.can_interact(user_id, username, channel_id, is_dm)
         if not allowed:
             self.rest.send_message(channel_id, reason, reply_to_message_id=msg_id)
             return
+
+        # Authorized conversation: journal tasks / proposals / questions too.
+        self._capture_message(channel_id, user_id, username, clean_text, is_dm)
 
         # Trigger visual typing indicator in Discord
         self.rest.trigger_typing(channel_id)
@@ -935,6 +1052,10 @@ class DiscordGatewayDaemon:
         bot_id = self.bot_user["id"]
         bot_tag = f"{self.bot_user.get('username')}#{self.bot_user.get('discriminator', '0')}"
         print(f"🤖 [Discord Gateway] Authenticated as @{bot_tag} (ID: {bot_id})")
+        print(
+            f"🧠 [Discord Gateway] Memory journal: "
+            f"{'enabled' if self.auth.memory_capture else 'disabled'} -> {self.memory.directory}"
+        )
 
         try:
             self.rest.register_slash_commands(str(bot_id))
